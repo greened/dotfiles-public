@@ -1,0 +1,8 @@
+# -*-sh-*-
+
+LOGIN_SHELL=true
+
+source ~/.bashrc
+
+# uv
+export PATH="$HOME/.local/bin:$PATH"

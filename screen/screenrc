@@ -1,0 +1,17 @@
+# An alternative hardstatus to display a bar at the bottom listing the
+# windownames and highlighting the current windowname in blue. (This is only
+# enabled if there is no hardstatus setting for your terminal)
+hardstatus on
+hardstatus alwayslastline
+hardstatus string "%{.bW}%-w%{.rW}%n %t%{-}%+w %=%{..G} %H %{..Y} %m/%d %C%a "
+
+screen -t compiler 0 bash
+screen -t merge 1 bash
+screen -t test1 2 bash
+screen -t test3 3 bash
+screen -t test3 4 bash
+screen -t test4 5 bash
+screen -t official 6 bash
+screen -t staging 7 bash
+screen -t commit 8 bash
+screen -t PTH 9 bash

@@ -1,0 +1,12 @@
+# Public base.  Employer/personal hosts + identities come from overlays cloned
+# into ~/lib/dotfiles-overlays/, pulled in by this glob.  Include first so
+# overlay Host entries take priority.
+Include ~/lib/dotfiles-overlays/*/ssh/config
+
+Host *
+  TCPKeepAlive yes
+  SendEnv INSIDE_EMACS
+  StreamLocalBindUnlink yes
+  ForwardAgent yes
+  ForwardX11 yes
+  ServerAliveInterval 240

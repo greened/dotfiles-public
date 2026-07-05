@@ -1,0 +1,163 @@
+# -*-sh-*-
+# ~/.bashrc: executed by bash(1) for non-login shells.
+#
+# Public base.  Company/personal specifics are NOT here — each overlay cloned
+# into ~/lib/dotfiles-overlays/ drops bash/*.sh files that are sourced (and
+# self-activate) via the glob further down.
+
+# see /usr/share/doc/bash/examples/startup-files (in the package bash-doc)
+# for examples
+
+# Functions to help us manage paths.  Second argument is the name of the path
+# variable to be modified (default: PATH)
+pathremove () {
+        local IFS=':'
+        local NEWPATH
+        local DIR
+        local PATHVARIABLE=${2:-PATH}
+        for DIR in ${!PATHVARIABLE} ; do
+                if [ "$DIR" != "$1" ] ; then
+                  NEWPATH=${NEWPATH:+$NEWPATH:}$DIR
+                fi
+        done
+        export $PATHVARIABLE="$NEWPATH"
+}
+
+manpathremove () {
+        local IFS=':'
+        local NEWPATH
+        local DIR
+        local MANPATHVARIABLE=${2:-MANPATH}
+        for DIR in ${!MANPATHVARIABLE} ; do
+                if [ "$DIR" != "$1" ] ; then
+                  NEWPATH=${NEWPATH:+$NEWPATH:}$DIR
+                fi
+        done
+        export $MANPATHVARIABLE="$NEWPATH"
+}
+
+pathprepend () {
+        pathremove $1 $2
+        local PATHVARIABLE=${2:-PATH}
+        export $PATHVARIABLE="$1${!PATHVARIABLE:+:${!PATHVARIABLE}}"
+}
+
+manpathprepend () {
+        manpathremove $1 $2
+        local MANPATHVARIABLE=${2:-MANPATH}
+        export $MANPATHVARIABLE="$1${!MANPATHVARIABLE:+:${!MANPATHVARIABLE}}"
+}
+
+pathappend () {
+        pathremove $1 $2
+        local PATHVARIABLE=${2:-PATH}
+        export $PATHVARIABLE="${!PATHVARIABLE:+${!PATHVARIABLE}:}$1"
+}
+
+if [[ "$OSTYPE" = "darwin"* ]]; then
+    pathprepend /usr/local/opt/coreutils/libexec/gnubin
+fi
+
+LIB="$(dirname $(realpath ${BASH_SOURCE[0]}))/lib"
+
+# Generic library setup only (emacs/gpg/ssh have no company/personal content).
+. ${LIB}/emacs.sh
+. ${LIB}/gpg.sh
+. ${LIB}/ssh.sh
+
+# enable color support of ls and also add handy aliases
+if [ -x /usr/bin/dircolors ]; then
+    if [ -r ~/.dir_colors ]; then
+	eval "`dircolors -b ~/.dir_colors`"
+    else
+	eval "`dircolors -b`"
+    fi
+    alias ls='ls --color=auto'
+fi
+
+# Enable color support in LESS
+LESS="-eR"
+
+# enable programmable completion features
+if [ -f /etc/bash_completion ]; then
+    . /etc/bash_completion
+fi
+
+if [ -f ${LIB}/../git-completion.bash ]; then
+    . ${LIB}/../git-completion.bash
+fi
+
+# --- Overlays ---------------------------------------------------------------
+# Each repo cloned into ~/lib/dotfiles-overlays/ contributes bash/*.sh here.
+# They define and self-activate their own environment; the set of cloned
+# overlays is the machine's config, with no per-machine editing.  No-op if none.
+for f in "$HOME"/lib/dotfiles-overlays/*/bash/*.sh; do [ -r "$f" ] && . "$f"; done
+
+# set variable identifying the chroot you work in (used in the prompt below)
+if [ -z "$debian_chroot" ] && [ -r /etc/debian_chroot ]; then
+    debian_chroot=$(cat /etc/debian_chroot)
+fi
+
+# set a fancy prompt (non-color, unless we know we "want" color)
+case "$TERM" in
+    xterm-*color|eterm-*color)
+        color_prompt=yes
+        ;;
+esac
+
+case "$TERM" in
+    dumb)
+        PS1="$ "
+        ;;
+    *)
+        if [ -n "$force_color_prompt" ]; then
+            if [ -x /usr/bin/tput ] && tput setaf 1 >&/dev/null; then
+	        color_prompt=yes
+            else
+	        color_prompt=
+            fi
+        fi
+
+        if [ "$color_prompt" = yes ]; then
+            PS1='${debian_chroot:+($debian_chroot)}\[\033[01;32m\]\u@\H\[\033[00m\]:\[\033[01;34m\]\w\[\033[00m\]\$ '
+        else
+            PS1='${debian_chroot:+($debian_chroot)}\u@\H:\w\$ '
+        fi
+        unset color_prompt force_color_prompt
+
+        case "$TERM" in
+            xterm*|rxvt*)
+                PS1="\[\e]0;${debian_chroot:+($debian_chroot)}\u@\H: \w\a\]$PS1"
+                ;;
+        esac
+        ;;
+esac
+
+setup_emacs
+setup_ssh
+setup_gpg
+
+# If not running interactively, don't do the rest.
+if [ -z "$PS1" ]; then
+    return
+fi
+
+# don't put duplicate lines in the history; force ignoreboth
+export HISTCONTROL=$HISTCONTROL${HISTCONTROL+,}ignoredups
+export HISTCONTROL=ignoreboth
+
+# append to the history file, don't overwrite it
+shopt -s histappend
+
+# check the window size after each command
+shopt -s checkwinsize
+
+if [[ -x /opt/homebrew/bin/brew ]]; then
+    eval "$(/opt/homebrew/bin/brew shellenv)"
+fi
+
+# Now to clean up
+unset pathremove pathprepend pathappend
+
+# uv
+export PATH="$HOME/.local/bin:$PATH"
