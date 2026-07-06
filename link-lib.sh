@@ -27,7 +27,7 @@ unlink_managed() {  # dest — retire an obsolete link, but ONLY if it is a syml
   [ -L "$dest" ] || return 0
   t="$(readlink "$dest")"
   case "$t" in
-    */lib/dotfiles/*|*/lib/dotfiles-overlays/*) rm -f "$dest" ;;
+    */lib/dotfiles/*|*/lib/dotfiles-overlays/*|lib/dotfiles/*|lib/dotfiles-overlays/*) rm -f "$dest" ;;
   esac
 }
 

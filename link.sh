@@ -42,7 +42,7 @@ bad=0
 while IFS= read -r l; do
   t="$(readlink "$l")"
   case "$t" in
-    "$PUB"/*|"$OVERLAYS"/*)
+    "$PUB"/*|"$OVERLAYS"/*|*/lib/dotfiles/*|*/lib/dotfiles-overlays/*|lib/dotfiles/*|lib/dotfiles-overlays/*)
       if [ ! -e "$l" ]; then echo "!! STALE LINK (bug): $l -> $t" >&2; bad=$((bad + 1)); fi ;;
   esac
 done < <(find "$HOME" -maxdepth 2 -type l 2>/dev/null)
