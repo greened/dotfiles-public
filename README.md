@@ -88,6 +88,24 @@ Prerequisites: `git`, and a GitHub SSH key (needed to clone private overlays; th
 public base alone works without one — a missing overlay just warns and is
 skipped).
 
+### SSH identity for private overlays
+
+If the SSH key your machine offers for `github.com` authenticates as a *different*
+GitHub account than the one that owns your private overlays, the public base still
+clones (any authenticated key can read a public repo) but every private overlay
+fails with `ERROR: Repository not found.` — GitHub hides a private repo from the
+wrong identity, so it reads as "missing" rather than "denied."
+
+Point git at the right key for the run:
+
+    GIT_SSH_COMMAND="ssh -i ~/.ssh/<your-key> -o IdentitiesOnly=yes" \
+      ~/lib/dotfiles/install.sh
+
+`IdentitiesOnly=yes` stops ssh from falling back to the wrong agent key.  The key
+must already exist on the machine — copy it over before the first install.  To
+make it permanent, add a `github.com` block to `~/.ssh/config` with the matching
+`IdentityFile`.
+
 ## Deployment model
 
 `~/.bashrc` and `~/.bash_profile` are written as **real files that source** the
