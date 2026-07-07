@@ -45,8 +45,25 @@ get "$PUBLIC_URL" "$PUB" required
 
 # --- overlays from the private manifest --------------------------------------
 if [ ! -r "$MANIFEST" ]; then
-  echo ">> no overlay manifest at $MANIFEST — installing the base only."
-  echo "   (add 'name url [match]' lines there to layer in overlays.)"
+  # Scaffold a commented template so a fresh machine has a starting point.  The
+  # public base names no private overlays, so the examples are placeholders you
+  # replace with your own repos.
+  echo ">> no overlay manifest at $MANIFEST — scaffolding a template."
+  mkdir -p "$(dirname "$MANIFEST")"
+  cat > "$MANIFEST" <<'EOF'
+# Private dotfiles overlay manifest — read by install.sh.
+# One entry per line:  name  url  [match]
+#   name   directory under ~/lib/dotfiles-overlays to clone the overlay into
+#   url    git remote to clone/pull
+#   match  'always', or a shell glob (a|b alternation ok) tested against this
+#          machine's FQDN; omit to default to 'always'
+# Lines starting with # are ignored.  Replace the examples with your overlays
+# and re-run install.sh.
+#
+# personal   git@github.com:you/dotfiles-personal.git   always
+# work       git@github.com:you/dotfiles-work.git        *.corp.example.com
+EOF
+  echo "   edit it to add your overlays, then re-run install.sh — base only for now."
 else
   # Select overlays whose match is 'always' or a glob matching this host.
   entries=()   # each: "name|url"
