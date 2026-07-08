@@ -92,7 +92,7 @@ and persist across restarts.
 
 | Key            | Action                                                        |
 |----------------|---------------------------------------------------------------|
-| `RET` / `mouse-1` | Jump to the item's room to read / reply, and remove it from the list (you're handling it) |
+| `RET` / `mouse-1` | Open the room, land point on this exact message, and remove the item from the list (you're handling it). Scroll up for channel context if you want it. |
 | `d`            | Done — remove the item (without jumping)                       |
 | `s`            | Snooze `slack-attention-snooze-minutes` (default 15), then it re-surfaces automatically |
 | `C-u N s`      | Snooze for N minutes                                           |
