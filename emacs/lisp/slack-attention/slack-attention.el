@@ -135,6 +135,14 @@ them, without a leading `#'.  Example: \\='(\"team-foo\" \"help-bar\")."
   "When non-nil, every direct message raises an attention item."
   :type 'boolean :group 'slack-attention)
 
+(defcustom slack-attention-muted-dm-senders nil
+  "DM partner name substrings whose direct messages should NOT raise an item.
+Case-insensitive substring match against the DM room name, so app/bot DMs can
+be silenced while real-person DMs still notify.  Example:
+\\='(\"GitHub\" \"Confluence\").  A muted DM is suppressed even if it happens to
+contain a direct @-mention."
+  :type '(repeat string) :group 'slack-attention)
+
 (defcustom slack-attention-notify-direct-mentions t
   "When non-nil, a direct @-mention of you raises an attention item.
 Broadcast mentions (@here/@channel/@everyone) do NOT count."
@@ -159,6 +167,13 @@ on top of whatever emacs-slack already notifies."
         (text (or (ignore-errors (slot-value message 'text)) "")))
     (and id (string-match-p (regexp-quote (format "<@%s>" id)) text))))
 
+(defun slack-attention--dm-muted-p (room team)
+  "Non-nil if ROOM is a DM whose partner matches `slack-attention-muted-dm-senders'."
+  (and (ignore-errors (slack-im-p room))
+       (let ((nm (downcase (or (slack-attention--room-name room team) ""))))
+         (seq-some (lambda (s) (string-match-p (regexp-quote (downcase s)) nm))
+                   slack-attention-muted-dm-senders))))
+
 (defun slack-attention-notify-policy (message room team)
   "Return non-nil iff MESSAGE in ROOM/TEAM is worth flagging, per your policy."
   (condition-case nil
@@ -172,6 +187,8 @@ on top of whatever emacs-slack already notifies."
                          (ignore-errors (slack-message-sender-id message team))
                          (ignore-errors (slot-value message 'user)))
                      self))
+         ;; Muted DM senders (bots/apps) never notify, even on a direct mention.
+         (not (slack-attention--dm-muted-p room team))
          (or (and slack-attention-notify-dms (slack-im-p room))
              (member (slack-attention--room-name room team)
                      slack-attention-important-channels)
@@ -304,13 +321,20 @@ separate :after capture runs even when a :before-while gate blocks the banner."
               slack-attention--items)))
 
 (defun slack-attention-jump ()
-  "Jump to the room of the item at point (to read / reply)."
+  "Jump to the room of the item at point and remove it from the list.
+Clicking/RET means you are handling the item, so it is dropped from the panel
+\(like `d').  Items restored from a previous session (no live room object) are
+kept, since you cannot jump to them yet."
   (interactive)
   (let ((it (slack-attention--item-at-point)))
     (unless it (user-error "No item here"))
     (let ((room (plist-get it :room)) (team (plist-get it :team)))
       (if (and room team)
-          (slack-room-display room team)
+          (progn
+            (slack-room-display room team)
+            ;; Handled -> remove from the list.
+            (setq slack-attention--items (delq it slack-attention--items))
+            (slack-attention--refresh-buffer))
         (message "This item was restored from a previous session; open its room via emacs-slack (%s / %s)."
                  (plist-get it :team-name) (plist-get it :room-name))))))
 
