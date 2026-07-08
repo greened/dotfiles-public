@@ -218,6 +218,7 @@ separate :after capture runs even when a :before-while gate blocks the banner."
              (item (list :id (cl-incf slack-attention--counter)
                          :message message :room room :team team
                          :team-name team-name :room-name room-name
+                         :ts (ignore-errors (slot-value message 'ts))
                          :text (if (string-empty-p text) "(no text)" text)
                          :time (float-time)
                          :snooze nil)))
@@ -328,10 +329,15 @@ kept, since you cannot jump to them yet."
   (interactive)
   (let ((it (slack-attention--item-at-point)))
     (unless it (user-error "No item here"))
-    (let ((room (plist-get it :room)) (team (plist-get it :team)))
+    (let ((room (plist-get it :room)) (team (plist-get it :team)) (ts (plist-get it :ts)))
       (if (and room team)
           (progn
-            (slack-room-display room team)
+            ;; Open the room and, once its history has loaded, land point on the
+            ;; specific message (by ts) so the item is right there -- scroll up
+            ;; only if you want the surrounding channel context.
+            (slack-room-display room team
+                                (and ts (lambda (&rest _)
+                                          (ignore-errors (slack-buffer-goto ts)))))
             ;; Handled -> remove from the list.
             (setq slack-attention--items (delq it slack-attention--items))
             (slack-attention--refresh-buffer))
