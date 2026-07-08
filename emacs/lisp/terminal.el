@@ -77,23 +77,6 @@ When nil, the bare host name is used.")
     (when (not (string= host "localhost"))
       (defterm host))))
 
-(defun terminal-bind-keys (machine-alist)
-  (dolist (item machine-alist)
-    (let* ((name (nth 0 item))
-           (key (nth 1 item)))
-      (bind-key (concat "C-c " key)
-                (cond
-                 ((string= name "localhost")
-                  (lambda ()
-                   (interactive)
-                   (vterm-localhost)))
-                 (t
-                  (lambda ()
-                    (interactive)
-                    (funcall (intern (format "term-vterm-%s" name))))))))))
-
-(terminal-bind-keys my-term-machine-alist)
-
 (defun terminal-generate-hydra-heads (name machine-alist)
   (let ((result '()))
     (dolist (item machine-alist result)
@@ -109,13 +92,35 @@ When nil, the bare host name is used.")
                                 :column
                                 ,column))))))))
 
-(setq terminal-build-hydra-heads
-      (terminal-generate-hydra-heads "vterm"
-                                     my-term-machine-alist))
+(defun terminal-rebuild-hydra (machine-alist)
+  "(Re)build the `C-c t' terminal hydra from MACHINE-ALIST.
+Run after the keys are bound so each head picks up its `C-c <key>' binding."
+  (eval `(defhydra terminal-hydra-build (:color blue :hint nil)
+           ,@(terminal-generate-hydra-heads "vterm" machine-alist))))
 
-;; Create build hydra.
-(eval `(defhydra terminal-hydra-build (:color blue :hint nil)
-         ,@(append
-            terminal-build-hydra-heads)))
+(defun terminal-bind-keys (machine-alist)
+  (dolist (item machine-alist)
+    (let* ((name (nth 0 item))
+           (key (nth 1 item)))
+      (bind-key (concat "C-c " key)
+                (cond
+                 ((string= name "localhost")
+                  (lambda ()
+                   (interactive)
+                   (vterm-localhost)))
+                 (t
+                  (lambda ()
+                    (interactive)
+                    (funcall (intern (format "term-vterm-%s" name)))))))))
+  ;; Rebuild the hydra too, so an overlay that adds hosts and re-runs this gets
+  ;; them in `C-c t', not just the direct `C-c <key>' binding.
+  (terminal-rebuild-hydra machine-alist))
+
+(terminal-bind-keys my-term-machine-alist)
 
 (define-key (current-global-map) (kbd "C-c t") (lambda () (interactive) (terminal-hydra-build/body)))
+
+;; Provide the feature so overlays can register terminals with
+;; `(with-eval-after-load 'terminal ...)' — without this, that hook never fires
+;; (the base loads this file but the symbol form waits on `featurep').
+(provide 'terminal)
