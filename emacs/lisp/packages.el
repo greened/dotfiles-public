@@ -2650,6 +2650,11 @@ Start `ielm' if it's not already running."
   :ensure nil
   :config)
 
+;; Prompt for GPG passphrases in the minibuffer via loopback when no external
+;; pinentry can reach us (GUI emacs, or auth-source-pass decrypting a `pass'
+;; entry).  Requires `allow-loopback-pinentry' in gpg-agent.conf.
+(setq epg-pinentry-mode 'loopback)
+
 (use-package pinentry
   :ensure t
   :defer nil
