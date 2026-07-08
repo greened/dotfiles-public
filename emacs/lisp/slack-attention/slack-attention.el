@@ -179,12 +179,16 @@ on top of whatever emacs-slack already notifies."
                   (slack-attention--directly-mentions-p message team)))))
     (error nil)))
 
-(defun slack-attention--notify-gate (message room team &rest _)
-  "Gate predicate for `slack-message-notify-alert'.
-Return non-nil to allow the alert (and its capture); nil suppresses both.
-Placed on the display funnel so it governs ALL of emacs-slack's
-notification paths, not just `slack-message-notify-p'."
-  (slack-attention-notify-policy message room team))
+(defun slack-attention--advice (orig message room team &rest args)
+  "Around-advice for `slack-message-notify-alert' (the alert display funnel).
+Gate the banner AND the panel capture together: when notifications are
+controlled and the policy rejects the message, suppress BOTH; otherwise capture
+it and let the banner fire.  A single :around avoids the ordering trap where a
+separate :after capture runs even when a :before-while gate blocks the banner."
+  (when (or (not slack-attention-control-notifications)
+            (slack-attention-notify-policy message room team))
+    (ignore-errors (slack-attention--add message room team))
+    (apply orig message room team args)))
 
 ;;; Capture -------------------------------------------------------------------
 
@@ -207,10 +211,6 @@ notification paths, not just `slack-message-notify-p'."
           (ignore-errors (raise-frame))))
     ;; Never let a bug here break emacs-slack's own notification flow.
     (error (message "slack-attention capture error: %S" err))))
-
-(defun slack-attention--capture-advice (message room team &rest _)
-  "After-advice for `slack-message-notify-alert'."
-  (slack-attention--add message room team))
 
 ;;; Rendering (tabulated-list) ------------------------------------------------
 
@@ -415,13 +415,13 @@ notification paths, not just `slack-message-notify-p'."
   (interactive)
   (unless (fboundp 'slack-message-notify-alert)
     (user-error "emacs-slack not loaded; require/configure `slack' first"))
-  ;; Gate the actual alert display: when enabled, nothing is shown OR captured
-  ;; unless the policy passes.  This funnels EVERY notification path through the
-  ;; policy (overriding `slack-message-notify-p' alone missed paths such as
-  ;; `slack-event-notify').
-  (when slack-attention-control-notifications
-    (advice-add 'slack-message-notify-alert :before-while #'slack-attention--notify-gate))
-  (advice-add 'slack-message-notify-alert :after #'slack-attention--capture-advice)
+  ;; One :around on the alert display funnel gates the banner AND the panel
+  ;; capture together (see `slack-attention--advice').  This funnels EVERY
+  ;; notification path through the policy -- overriding `slack-message-notify-p'
+  ;; alone missed paths such as `slack-event-notify', and separate
+  ;; before-while + after advices let the capture fire even when the banner
+  ;; was gated.
+  (advice-add 'slack-message-notify-alert :around #'slack-attention--advice)
   (add-hook 'kill-emacs-hook #'slack-attention-save)
   (slack-attention-load)
   (when slack-attention--items (slack-attention--ensure-snooze-timer))
@@ -432,10 +432,11 @@ notification paths, not just `slack-message-notify-p'."
 (defun slack-attention-teardown ()
   "Remove all advice and hooks installed by `slack-attention-setup'."
   (interactive)
-  (advice-remove 'slack-message-notify-alert #'slack-attention--capture-advice)
-  (advice-remove 'slack-message-notify-alert #'slack-attention--notify-gate)
-  (ignore-errors                        ; remove the pre-1.1 override if present
-    (advice-remove 'slack-message-notify-p #'slack-attention-notify-policy))
+  (advice-remove 'slack-message-notify-alert #'slack-attention--advice)
+  ;; Remove advices from earlier iterations if still present.
+  (ignore-errors (advice-remove 'slack-message-notify-alert #'slack-attention--capture-advice))
+  (ignore-errors (advice-remove 'slack-message-notify-alert #'slack-attention--notify-gate))
+  (ignore-errors (advice-remove 'slack-message-notify-p #'slack-attention-notify-policy))
   (remove-hook 'kill-emacs-hook #'slack-attention-save))
 
 ;;; Catch-up buffer -----------------------------------------------------------
