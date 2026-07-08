@@ -25,6 +25,7 @@
 			(concat emacs-root p)))
 (add-path "/lisp") ;; all my personal elisp code
 (add-path "/lisp/term") ;; terminal stuff
+(add-path "/lisp/slack-attention") ;; emacs-slack attention panel + catch-up
   ;;(add-path "/lisp/themes") ;; color themes
   ;(add-path "/site-lisp") ;; elisp stuff I find on the 'net
   ;(add-path "/site-lisp/doremi") ;; doremi config tool
