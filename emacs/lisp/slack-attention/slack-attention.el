@@ -141,10 +141,11 @@ Broadcast mentions (@here/@channel/@everyone) do NOT count."
   :type 'boolean :group 'slack-attention)
 
 (defcustom slack-attention-control-notifications t
-  "When non-nil, `slack-attention-setup' overrides `slack-message-notify-p'
-with `slack-attention-notify-policy', so BOTH the OS banner and the attention
-panel follow the policy above.  Set to nil to leave emacs-slack's own
-notification decision alone and only ADD panel capture on top of it."
+  "When non-nil, `slack-attention-setup' gates `slack-message-notify-alert'
+\(the alert display funnel) with the policy above, so BOTH the OS banner and
+the attention panel are suppressed for anything the policy rejects.  Set to
+nil to leave emacs-slack's own notifications alone and only ADD panel capture
+on top of whatever emacs-slack already notifies."
   :type 'boolean :group 'slack-attention)
 
 (defun slack-attention--self-id (team)
@@ -163,14 +164,27 @@ notification decision alone and only ADD panel capture on top of it."
   (condition-case nil
       (let ((self (slack-attention--self-id team)))
         (and
-         ;; Never flag your own messages.
-         (not (equal (ignore-errors (slot-value message 'user)) self))
+         ;; Never flag your own messages.  Use `slack-message-sender-id' -- the
+         ;; base `slack-message' class has no `user' slot (only the
+         ;; `slack-user-message' subclass does), so `slot-value' would silently
+         ;; miss and never exclude your own posts.
+         (not (equal (or (ignore-errors (slack-message-sender-id message))
+                         (ignore-errors (slack-message-sender-id message team))
+                         (ignore-errors (slot-value message 'user)))
+                     self))
          (or (and slack-attention-notify-dms (slack-im-p room))
              (member (slack-attention--room-name room team)
                      slack-attention-important-channels)
              (and slack-attention-notify-direct-mentions
                   (slack-attention--directly-mentions-p message team)))))
     (error nil)))
+
+(defun slack-attention--notify-gate (message room team &rest _)
+  "Gate predicate for `slack-message-notify-alert'.
+Return non-nil to allow the alert (and its capture); nil suppresses both.
+Placed on the display funnel so it governs ALL of emacs-slack's
+notification paths, not just `slack-message-notify-p'."
+  (slack-attention-notify-policy message room team))
 
 ;;; Capture -------------------------------------------------------------------
 
@@ -401,10 +415,13 @@ notification decision alone and only ADD panel capture on top of it."
   (interactive)
   (unless (fboundp 'slack-message-notify-alert)
     (user-error "emacs-slack not loaded; require/configure `slack' first"))
+  ;; Gate the actual alert display: when enabled, nothing is shown OR captured
+  ;; unless the policy passes.  This funnels EVERY notification path through the
+  ;; policy (overriding `slack-message-notify-p' alone missed paths such as
+  ;; `slack-event-notify').
+  (when slack-attention-control-notifications
+    (advice-add 'slack-message-notify-alert :before-while #'slack-attention--notify-gate))
   (advice-add 'slack-message-notify-alert :after #'slack-attention--capture-advice)
-  (when (and slack-attention-control-notifications
-             (fboundp 'slack-message-notify-p))
-    (advice-add 'slack-message-notify-p :override #'slack-attention-notify-policy))
   (add-hook 'kill-emacs-hook #'slack-attention-save)
   (slack-attention-load)
   (when slack-attention--items (slack-attention--ensure-snooze-timer))
@@ -416,7 +433,8 @@ notification decision alone and only ADD panel capture on top of it."
   "Remove all advice and hooks installed by `slack-attention-setup'."
   (interactive)
   (advice-remove 'slack-message-notify-alert #'slack-attention--capture-advice)
-  (ignore-errors
+  (advice-remove 'slack-message-notify-alert #'slack-attention--notify-gate)
+  (ignore-errors                        ; remove the pre-1.1 override if present
     (advice-remove 'slack-message-notify-p #'slack-attention-notify-policy))
   (remove-hook 'kill-emacs-hook #'slack-attention-save))
 
