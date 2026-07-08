@@ -92,8 +92,8 @@ and persist across restarts.
 
 | Key            | Action                                                        |
 |----------------|---------------------------------------------------------------|
-| `RET` / `mouse-1` | Jump to the item's room to read / reply                    |
-| `d`            | Done — remove the item                                         |
+| `RET` / `mouse-1` | Jump to the item's room to read / reply, and remove it from the list (you're handling it) |
+| `d`            | Done — remove the item (without jumping)                       |
 | `s`            | Snooze `slack-attention-snooze-minutes` (default 15), then it re-surfaces automatically |
 | `C-u N s`      | Snooze for N minutes                                           |
 | `u`            | Un-snooze everything                                           |
@@ -139,6 +139,7 @@ unread/mention counts.
 |----------|---------|---------|
 | `slack-attention-important-channels` | your 5 channels | Channels whose every message is flagged |
 | `slack-attention-notify-dms` | `t` | Flag all DMs |
+| `slack-attention-muted-dm-senders` | `nil` | DM partner name substrings to silence (e.g. bot/app DMs like GitHub, Confluence) |
 | `slack-attention-notify-direct-mentions` | `t` | Flag direct `@you` mentions |
 | `slack-attention-control-notifications` | `t` | Override `slack-message-notify-p` (policy drives banner too) |
 | `slack-attention-snooze-minutes` | `15` | Default snooze length |
