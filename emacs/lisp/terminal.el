@@ -58,6 +58,43 @@ When nil, the bare host name is used.")
   (vterm term-vterm-buffer-name)
   (vterm-send-string (format "ssh %s\n" host)))
 
+(defvar my-term-reconnect-host nil
+  "Host for `vterm-reconnect-default'.
+When nil, the first non-localhost entry in `my-term-machine-alist' is used.")
+
+(defun my-term--default-reconnect-host ()
+  "The host `vterm-reconnect-default' targets."
+  (or my-term-reconnect-host
+      (catch 'h
+        (dolist (p my-term-machine-alist)
+          (unless (string= (nth 0 p) "localhost") (throw 'h (nth 0 p)))))))
+
+(defun vterm-reconnect (host)
+  "Kill any existing *HOST* vterm buffer(s) and open a fresh ssh vterm to HOST.
+Handy when a forwarded connection goes stale (e.g. an Emacs-server
+`RemoteForward' whose socket died): one command tears down the dead session and
+starts a new one.  Run this locally in Emacs; do not drive it over the very
+socket it is rebuilding."
+  (interactive (list (or (my-term--default-reconnect-host)
+                         (read-string "Reconnect host: "))))
+  ;; vterm title-tracking (`vterm-buffer-name-string') renames the buffer to
+  ;; e.g. "vterm dgreene@dgreene-vm.cerebras.aws: ~", so match the host as a
+  ;; substring of any vterm/term buffer rather than the original "*HOST*" name.
+  (dolist (b (buffer-list))
+    (let ((n (buffer-name b)))
+      (when (and n (string-match-p (regexp-quote host) n)
+                 (with-current-buffer b (derived-mode-p 'vterm-mode 'term-mode)))
+        (let ((kill-buffer-query-functions nil))   ; don't prompt about the live process
+          (ignore-errors (kill-buffer b))))))
+  (vterm-ssh host))
+
+(defun vterm-reconnect-default ()
+  "Reconnect the default forwarding host (see `my-term-reconnect-host')."
+  (interactive)
+  (let ((host (my-term--default-reconnect-host)))
+    (unless host (user-error "No reconnect host configured (set `my-term-reconnect-host')"))
+    (vterm-reconnect host)))
+
 (defun defterm (host)
   (let ((tramp-host (if my-term-domain
                         (format "%s.%s" host my-term-domain)
@@ -119,6 +156,10 @@ Run after the keys are bound so each head picks up its `C-c <key>' binding."
 (terminal-bind-keys my-term-machine-alist)
 
 (define-key (current-global-map) (kbd "C-c t") (lambda () (interactive) (terminal-hydra-build/body)))
+
+;; Reconnect the default forwarding host (kills its stale vterm, opens a fresh
+;; one).  Invoke locally when a forwarded socket has gone stale.
+(define-key (current-global-map) (kbd "C-c R") #'vterm-reconnect-default)
 
 ;; Provide the feature so overlays can register terminals with
 ;; `(with-eval-after-load 'terminal ...)' — without this, that hook never fires
