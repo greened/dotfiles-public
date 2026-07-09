@@ -2785,24 +2785,17 @@ Start `ielm' if it's not already running."
 ;;   :straight (remote-emacsclient
 ;;              :type git :repo "https://github.com/habnabit/remote-emacsclient"))
 
-;; Map an LLM provider name to the pass-store account used to look up its
-;; API key.  Overlays populate this via `add-to-list'; the entry may be an
-;; account string or a function of the provider name returning one.  The
-;; default account is used when no provider-specific entry is present.
-(defvar my-llm-accounts nil
-  "Alist mapping LLM provider name to a pass-store account.")
-
-(defvar my-llm-default-account nil
-  "Default pass-store account for LLM API keys when none matches.")
-
-(defun get-llm-api-key (name)
-  (let* ((entry (cdr (assoc name my-llm-accounts)))
-         (account (cond ((functionp entry) (funcall entry name))
-                        (entry entry)
-                        (my-llm-default-account my-llm-default-account)
-                        (t nil))))
-    (when account
-      (auth-source-pass-get 'secret (format "%s/%s/apikey" name account)))))
+;; Resolve LLM provider API keys from the Unix `pass' store.  A "local but
+;; shareable" package (see lisp/llm-api-key/README.md): overlays populate
+;; `llm-api-key-accounts' / `llm-api-key-default-account', and the gptel and
+;; aidermacs blocks below call `llm-api-key'.  Demanded so those vars exist
+;; before overlays `add-to-list' into them.
+;; To extract it to its own repo later, replace the `:ensure nil' + `:load-path'
+;; lines with:  :ensure (llm-api-key :host github :repo "USER/llm-api-key")
+(use-package llm-api-key
+  :ensure nil                           ; local package; do not let elpaca fetch
+  :load-path (lambda () (list (expand-file-name "lisp/llm-api-key" emacs-root)))
+  :demand t)
 
 (use-package gptel
   :ensure t
@@ -2812,12 +2805,12 @@ Start `ielm' if it's not already running."
   ("C-c g s" . my/gptel-model-switch)
   ("C-c g m" . gptel-menu)
   :config
-  (setq gptel-api-key (get-llm-api-key "openai.com"))
+  (setq gptel-api-key (llm-api-key "openai.com"))
 
   (setq my/gptel-gemini-backend
         (gptel-make-gemini
          "Gemini"
-         :key (get-llm-api-key "google.com")
+         :key (llm-api-key "google.com")
          :request-params '(:tools [(:google_search ())]
                                   :generationConfig (:thinkingConfig (:includeThoughts "false")))
          :stream t))
@@ -2830,7 +2823,7 @@ Start `ielm' if it's not already running."
          :protocol "https"
          :stream t
          :models '("mistral-small")
-         :key (get-llm-api-key "mistral.ai")))
+         :key (llm-api-key "mistral.ai")))
 
   ;; Additional models offered by `my/gptel-model-switch'.  Overlays add
   ;; their provider's model symbols here.
@@ -2878,9 +2871,9 @@ Start `ielm' if it's not already running."
   :ensure t
   :bind (("C-c e" . aidermacs-transient-menu))
   :config
-  (setenv "OPENAI_API_KEY" (get-llm-api-key "openai.com"))
-  (setenv "MISTRAL_API_KEY" (get-llm-api-key "mistral.ai"))
-  (setenv "GEMINI_API_KEY" (get-llm-api-key "google.com"))
+  (setenv "OPENAI_API_KEY" (llm-api-key "openai.com"))
+  (setenv "MISTRAL_API_KEY" (llm-api-key "mistral.ai"))
+  (setenv "GEMINI_API_KEY" (llm-api-key "google.com"))
   ;; The default aider models (and any provider-specific API-key env vars)
   ;; are set by a private overlay.
   (setq aidermacs-backend 'vterm)
