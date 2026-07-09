@@ -1204,6 +1204,17 @@ PRIORITY may be one of the characters ?A, ?B, or ?C."
                   (whitespace-mode))
               (buffer-face-mode t))))
 
+;; Respawn a stale ssh vterm in one command (C-c R).  A "local but shareable"
+;; package: a self-contained, publishable package that still lives inside
+;; dotfiles.  `terminal.el' requires it for `vterm-ssh'; this block owns its
+;; load-path + the C-c R binding.  See lisp/vterm-reconnect/README.md.
+;; To extract it to its own repo later, replace the `:ensure nil' + `:load-path'
+;; lines with:  :ensure (vterm-reconnect :host github :repo "USER/vterm-reconnect")
+(use-package vterm-reconnect
+  :ensure nil                           ; local package; do not let elpaca fetch
+  :load-path (lambda () (list (expand-file-name "lisp/vterm-reconnect" emacs-root)))
+  :bind ("C-c R" . vterm-reconnect-default))
+
 ;; (use-package multi-vterm
 ;;   :straight (:host github :repo "suonlight/multi-vterm" :branch "master"))
 
