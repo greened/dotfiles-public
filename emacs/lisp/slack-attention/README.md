@@ -17,8 +17,10 @@ The file contains **no tokens or team config** — those stay in your private in
 
 ## Setup
 
-The package lives here in the public base and is put on `load-path` by `emacsrc`
-(`(add-path "/lisp/slack-attention")`). The *enablement* lives next to your
+This is a **local-but-shareable** package: a self-contained, publishable package
+that currently lives inside dotfiles. Its own `use-package` block owns loading it
+(via `:load-path`), so it behaves exactly like a fetched package and does not
+depend on any global `load-path` setup. The *enablement* lives next to your
 emacs-slack config, because the important-channel list is context-specific —
 i.e. in your private/context overlay (e.g. `dotfiles-overlays/<context>/emacs/…`),
 right after the `(use-package slack …)` block:
@@ -26,6 +28,8 @@ right after the `(use-package slack …)` block:
 ```elisp
 (use-package slack-attention
   :ensure nil                           ; local package; do not let elpaca fetch
+  ;; Lambda (not a bare form): use-package treats a list as a list-of-paths.
+  :load-path (lambda () (list (expand-file-name "lisp/slack-attention" emacs-root)))
   :after slack                          ; load + configure once emacs-slack is up
   :custom
   (slack-attention-important-channels
@@ -36,10 +40,22 @@ right after the `(use-package slack …)` block:
   (slack-attention-setup))
 ```
 
+### Extracting to its own repo later
+
+Because the block above is self-contained, publishing this directory as a
+standalone repo is a one-line swap — replace the `:ensure nil` + `:load-path`
+lines with an elpaca recipe, and nothing else in the block changes:
+
+```elisp
+  :ensure (slack-attention :host github :repo "USER/slack-attention")
+```
+
 Notes:
 
 * **`:ensure nil`** is required — your config sets `elpaca-use-package-always-ensure`,
   so without it elpaca would try to fetch a recipe for this local package.
+* **`:load-path`** points at this directory relative to `emacs-root` (defined in
+  `emacsrc`), so the package is found without any global `add-path`.
 * **`:after slack`** defers loading and `:config` until emacs-slack is up, so it
   works regardless of where/when `slack` itself is configured.
 * `slack-attention-setup` installs the capture/notification advice, loads any
@@ -49,6 +65,7 @@ Notes:
 If you prefer not to use `use-package`, the equivalent is:
 
 ```elisp
+(add-to-list 'load-path (expand-file-name "lisp/slack-attention" emacs-root))
 (with-eval-after-load 'slack
   (require 'slack-attention)
   (slack-attention-setup))
