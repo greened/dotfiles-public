@@ -24,6 +24,11 @@
 ;(require 'remote-emacsclient)
 ;(update-tramp-emacs-server-port-forward tramp-default-method)
 
+;; `vterm-reconnect' provides `vterm-ssh' (used by `defterm' below) and the C-c R
+;; reconnect commands.  It is a local package under lisp/vterm-reconnect/, put on
+;; load-path by its `use-package' block in packages.el (which loads first).
+(require 'vterm-reconnect)
+
 ;; Overlay-settable configuration.  Private overlays populate these to add
 ;; remote hosts and, optionally, a domain suffix for tramp-term hosts.
 (defvar my-term-domain nil
@@ -52,48 +57,16 @@ When nil, the bare host name is used.")
   (term-set-escape-char ?\^x)
   (switch-to-buffer term-ansi-buffer-name))
 
-(defun vterm-ssh (host)
-  (setq term-vterm-buffer-name (concat "*" host "*"))
-  (setq term-vterm-buffer-name (generate-new-buffer-name term-vterm-buffer-name))
-  (vterm term-vterm-buffer-name)
-  (vterm-send-string (format "ssh %s\n" host)))
-
-(defvar my-term-reconnect-host nil
-  "Host for `vterm-reconnect-default'.
-When nil, the first non-localhost entry in `my-term-machine-alist' is used.")
-
-(defun my-term--default-reconnect-host ()
-  "The host `vterm-reconnect-default' targets."
-  (or my-term-reconnect-host
-      (catch 'h
-        (dolist (p my-term-machine-alist)
-          (unless (string= (nth 0 p) "localhost") (throw 'h (nth 0 p)))))))
-
-(defun vterm-reconnect (host)
-  "Kill any existing *HOST* vterm buffer(s) and open a fresh ssh vterm to HOST.
-Handy when a forwarded connection goes stale (e.g. an Emacs-server
-`RemoteForward' whose socket died): one command tears down the dead session and
-starts a new one.  Run this locally in Emacs; do not drive it over the very
-socket it is rebuilding."
-  (interactive (list (or (my-term--default-reconnect-host)
-                         (read-string "Reconnect host: "))))
-  ;; vterm title-tracking (`vterm-buffer-name-string') renames the buffer to
-  ;; e.g. "vterm dgreene@dgreene-vm.cerebras.aws: ~", so match the host as a
-  ;; substring of any vterm/term buffer rather than the original "*HOST*" name.
-  (dolist (b (buffer-list))
-    (let ((n (buffer-name b)))
-      (when (and n (string-match-p (regexp-quote host) n)
-                 (with-current-buffer b (derived-mode-p 'vterm-mode 'term-mode)))
-        (let ((kill-buffer-query-functions nil))   ; don't prompt about the live process
-          (ignore-errors (kill-buffer b))))))
-  (vterm-ssh host))
-
-(defun vterm-reconnect-default ()
-  "Reconnect the default forwarding host (see `my-term-reconnect-host')."
-  (interactive)
-  (let ((host (my-term--default-reconnect-host)))
-    (unless host (user-error "No reconnect host configured (set `my-term-reconnect-host')"))
-    (vterm-reconnect host)))
+;; `vterm-ssh', `vterm-reconnect', and `vterm-reconnect-default' now live in the
+;; `vterm-reconnect' package (required above).  Point its default reconnect host
+;; at the first non-localhost terminal target so C-c R reconnects it.
+(defun my-term--sync-reconnect-host ()
+  "Set `vterm-reconnect-host' from `my-term-machine-alist' unless already set."
+  (unless vterm-reconnect-host
+    (setq vterm-reconnect-host
+          (catch 'h
+            (dolist (p my-term-machine-alist)
+              (unless (string= (nth 0 p) "localhost") (throw 'h (nth 0 p))))))))
 
 (defun defterm (host)
   (let ((tramp-host (if my-term-domain
@@ -151,15 +124,16 @@ Run after the keys are bound so each head picks up its `C-c <key>' binding."
                     (funcall (intern (format "term-vterm-%s" name)))))))))
   ;; Rebuild the hydra too, so an overlay that adds hosts and re-runs this gets
   ;; them in `C-c t', not just the direct `C-c <key>' binding.
-  (terminal-rebuild-hydra machine-alist))
+  (terminal-rebuild-hydra machine-alist)
+  ;; Keep the C-c R default reconnect host in sync with the terminal targets.
+  (my-term--sync-reconnect-host))
 
 (terminal-bind-keys my-term-machine-alist)
 
 (define-key (current-global-map) (kbd "C-c t") (lambda () (interactive) (terminal-hydra-build/body)))
 
-;; Reconnect the default forwarding host (kills its stale vterm, opens a fresh
-;; one).  Invoke locally when a forwarded socket has gone stale.
-(define-key (current-global-map) (kbd "C-c R") #'vterm-reconnect-default)
+;; C-c R (`vterm-reconnect-default') is bound in the `vterm-reconnect'
+;; use-package block in packages.el.
 
 ;; Provide the feature so overlays can register terminals with
 ;; `(with-eval-after-load 'terminal ...)' — without this, that hook never fires
