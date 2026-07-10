@@ -47,23 +47,17 @@
 ;; (load-library "auth") ;; Authentication
 ;; keybindings + modeselect (file associations) are now folded into the
 ;; `(use-package emacs ...)' block in packages.el.
-(load-library "compilemode") ;; set up C/C++ programming
-(load-library "doxymacsmode") ;; set up C/C++ programming
-(load-library "fontlock") ;; set up C/C++ programming
+;; compilemode, doxymacsmode (dropped: dead), fontlock, gudmode, web, notes,
+;; face, llvm-emacs, and eserver are now folded into use-package blocks in
+;; packages.el (compile/font-lock/browse-url/faces/server + the gud, org,
+;; whitespace and cc-mode blocks).
 (load-library "google-c-style") ;; set up Google style
-(load-library "gudmode") ;; set up C/C++ programming
 (load-library "tablegen-mode") ;; set up LLVM
 (load-library "llvm-mode") ;; set up LLVM
-(load-library "llvm-emacs") ;; set up LLVM
-(load-library "web") ;; w3m
 (load-library "terminal") ;; ansi-term
-(load-library "face") ;; frame-fns
-(load-library "notes") ;; Org Mode
 (load-library "mail") ;; SMTP
 (load-library "colors") ;; Set colors
 (load-library "boxquote")
-
-(load-library "eserver") ;; set up the emacs server (unix socket, local only)
 
 (custom-set-variables
  ;; custom-set-variables was added by Custom.
