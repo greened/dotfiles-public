@@ -53,11 +53,12 @@
 ;; whitespace and cc-mode blocks).
 ;; google-c-style, llvm-mode, tablegen-mode (vendored, no upstream package) and
 ;; boxquote (now from MELPA) are use-package blocks in packages.el.
-(load-library "terminal") ;; ansi-term
+;; terminal.el is now the `term-launcher' local package (use-package block in
+;; packages.el); it provides the `term-launcher' feature that overlays hook.
 ;; mail.el is now folded into use-package blocks in packages.el (notmuch,
 ;; smtpmail-multi, mm-decode); it also provides the `mail' marker that overlays
 ;; hook with `(with-eval-after-load 'mail ...)'.
-(load-library "colors") ;; Set colors
+;; colors (the hober2 theme load) is now in the `(use-package emacs ...)' block.
 
 (custom-set-variables
  ;; custom-set-variables was added by Custom.
