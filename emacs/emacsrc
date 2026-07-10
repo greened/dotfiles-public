@@ -68,8 +68,7 @@
  '(custom-safe-themes
    '("2b32d3c97e2682370bc50717ff95a4e1e2ed0ab386c339c2d1e4af1273936dca" default))
  '(magit-todos-insert-after '(bottom) nil nil "Changed by setter of obsolete option `magit-todos-insert-at'")
- '(package-selected-packages nil)
- '(tramp-use-ssh-controlmaster-options nil t))
+ '(package-selected-packages nil))
 (custom-set-faces
  ;; custom-set-faces was added by Custom.
  ;; If you edit it by hand, you could mess it up, so be careful.
