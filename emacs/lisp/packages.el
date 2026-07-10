@@ -671,11 +671,12 @@ PRIORITY may be one of the characters ?A, ?B, or ?C."
   ;; Cache remote file attributes to avoid repeated stat calls.
   (setq remote-file-name-inhibit-cache 20)
 
-  ;; Reuse SSH connections via ControlMaster/ControlPersist so each
-  ;; TRAMP operation does not open a fresh SSH handshake.
-  ;;
-  ;; Seems to hang TRAMP?
-  (customize-set-variable 'tramp-use-ssh-controlmaster-options t)
+  ;; SSH connection reuse via ControlMaster/ControlPersist.  Left OFF: it
+  ;; previously hung TRAMP here, and passwordless auth works fine via the
+  ;; ssh-agent without it.  (This was set t and then silently overridden to nil
+  ;; by emacsrc's custom-set-variables -- the confusing conflict; now nil in one
+  ;; place.)  To try connection reuse, flip this to t; the options below are ready.
+  (customize-set-variable 'tramp-use-ssh-controlmaster-options nil)
   (setq tramp-ssh-controlmaster-options
         (concat "-o ControlMaster=auto"
                 " -o ControlPath=" (expand-file-name "~/.ssh/tramp-%%r@%%h:%%p")
