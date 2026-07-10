@@ -2182,11 +2182,9 @@ Start `ielm' if it's not already running."
 ;; Files with "llvm" in their names will automatically be set to the
 ;; llvm.org coding style.
 (add-hook 'c-mode-common-hook
-	  (function
-	   (lambda nil 
-	     (if (string-match "llvm" buffer-file-name)
-		 (progn
-		   (c-set-style "llvm.org")))))))
+          (lambda ()
+            (when (and buffer-file-name (string-match "llvm" buffer-file-name))
+              (c-set-style "llvm.org")))))
 
 (use-package paredit
   :ensure t
@@ -2867,11 +2865,10 @@ Start `ielm' if it's not already running."
   :ensure nil
 
   :config
-  ;; TODO: Make this parameterizable per-project.
-  (let ((gud-gdb-executable my-gud-gdb-executable))
-    (setq gud-gud-gdb-command-name (concat "--fullname")))
-  ;; from the former gudmode.el (the effective variable)
-  (setq gud-gdb-command-name "gdb -i=mi"))
+  ;; Use the (overlay-settable) project gdb with the GDB/MI interface.  This was
+  ;; previously a no-op: it set a typo'd `gud-gud-gdb-command-name' and never
+  ;; applied `my-gud-gdb-executable', so M-x gdb ran the system gdb regardless.
+  (setq gud-gdb-command-name (concat my-gud-gdb-executable " -i=mi")))
 
 (use-package vlf-setup
   :ensure vlf
