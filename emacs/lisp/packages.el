@@ -94,15 +94,25 @@
 ;; (setq load-path (remove-if (lambda (x) (string-match-p "org$" x)) load-path))
 ;; (setq load-path (remove-if (lambda (x) (string-match-p "org-" x)) load-path))
 
-(defvar local-repos-directory "~/src" "Directory for local repositories")
+(defvar local-repos-directory '("~/projects" "~/src")
+  "Directories to search for local package checkouts, in priority order.
+A single directory string is also accepted for backward compatibility.")
 
 ;; Get packages from local repositories first.
 (defun elpaca-recipe-try-local (recipe)
-  "If RECIPE's :try-local keyword is non-nil, return :repo relative to `local-repos-directory'"
+  "If RECIPE's :try-local keyword is non-nil, return :repo pointing at a
+local checkout of the package found under `local-repos-directory'
+\(searched in order); otherwise nil so elpaca fetches it normally."
   (when-let* (((plist-get recipe :try-local))
               (repo (plist-get recipe :repo))
-              (local (expand-file-name (elpaca-git--repo-name repo) local-repos-directory))
-              ((file-directory-p local)))
+              (name (elpaca-git--repo-name repo))
+              (dirs (if (listp local-repos-directory)
+                        local-repos-directory
+                      (list local-repos-directory)))
+              (local (seq-some (lambda (dir)
+                                 (let ((candidate (expand-file-name name dir)))
+                                   (and (file-directory-p candidate) candidate)))
+                               dirs)))
     (list :repo local)))
 
 (setq elpaca-recipe-functions '(elpaca-recipe-try-local))
