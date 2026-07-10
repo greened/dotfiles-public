@@ -47,8 +47,11 @@
 ;;; Code:
 
 (require 'vterm-reconnect)
-(require 'hydra)
 (require 'bind-key)
+;; NOTE: `hydra' is required lazily (in `term-launcher-hydra-menu', bound to
+;; C-c t) rather than here.  hydra is an elpaca (:ensure t) package loaded
+;; asynchronously at after-init, so a top-level (require 'hydra) fails while this
+;; package :demand-loads mid-init -- which aborts the whole config load.
 
 (declare-function vterm "vterm" (&optional buffer-name))
 (declare-function tramp-term "tramp-term" (&optional host))
@@ -149,9 +152,9 @@ Also syncs the `vterm-reconnect' default host to the first non-localhost target.
                  (t
                   (lambda () (interactive)
                     (funcall (intern (format "term-launcher-vterm-%s" name)))))))))
-  ;; Rebuild the hydra so an overlay that adds hosts and re-runs this gets them
-  ;; in `C-c t', not just the direct `C-c <key>' binding.
-  (term-launcher--rebuild-hydra machine-alist)
+  ;; The C-c t hydra is (re)built lazily on first use (see
+  ;; `term-launcher-hydra-menu'), so it always reflects the current alist and
+  ;; nothing here depends on hydra being loaded.
   (term-launcher--sync-reconnect-host))
 
 ;; Define per-host commands + bind keys for the default targets, and bind the
@@ -162,10 +165,18 @@ Also syncs the `vterm-reconnect' default host to the first non-localhost target.
     (unless (string= host "localhost")
       (term-launcher-defterm host))))
 
+;; C-c t builds the hydra on first use (lazily requiring `hydra'), so nothing at
+;; load time depends on hydra being available.
+(defun term-launcher-hydra-menu ()
+  "Open the terminal picker, (re)building it from `term-launcher-machine-alist'."
+  (interactive)
+  (require 'hydra)
+  (term-launcher--rebuild-hydra term-launcher-machine-alist)
+  (term-launcher-hydra/body))
+
 (term-launcher-bind-keys term-launcher-machine-alist)
 
-(define-key (current-global-map) (kbd "C-c t")
-            (lambda () (interactive) (term-launcher-hydra/body)))
+(define-key (current-global-map) (kbd "C-c t") #'term-launcher-hydra-menu)
 
 (provide 'term-launcher)
 ;;; term-launcher.el ends here
