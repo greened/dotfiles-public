@@ -2449,7 +2449,6 @@ Start `ielm' if it's not already running."
                                            try-complete-lisp-symbol))
   (global-set-key (kbd "M-/") #'hippie-expand)
   (global-set-key (kbd "s-/") #'hippie-expand)
-  (global-set-key (kbd "C-x C-b") #'ibuffer)
   (global-set-key (kbd "C-x \\") #'align-regexp)
 
   ;; Misc behavior.
@@ -2472,7 +2471,43 @@ Start `ielm' if it's not already running."
   ;; Editor: force left-to-right, and speed up buffers with very long lines.
   (setq bidi-paragraph-direction 'left-to-right)
   (setq bidi-inhibit-bpa t)
-  (global-so-long-mode 1))
+  (global-so-long-mode 1)
+
+  ;; Keybindings (from the former keybindings.el).
+  ;; Translate modified keypad up/down to plain arrows.
+  (define-key function-key-map [M-kp-up] [M-up])
+  (define-key function-key-map [M-kp-down] [M-down])
+  (define-key function-key-map [C-kp-up] [C-up])
+  (define-key function-key-map [C-kp-down] [C-down])
+  ;; C-x C-b -> buffer-menu (lists AND selects the buffer list).  This is the
+  ;; long-standing effective binding; it shadowed the `ibuffer' binding that
+  ;; used to sit in the loose globals block, so that dead line was dropped.
+  (define-key ctl-x-map "\C-b" 'buffer-menu)
+  (define-key ctl-x-map "\C-x" 'view-file)
+  (define-key esc-map "r" 'query-replace)
+  ;; Sane modifier keys on macOS.
+  (setq ns-function-modifier 'control)
+  (setq ns-control-modifier 'control)
+  (setq ns-option-modifier 'meta)
+  (setq ns-command-modifier 'meta)
+
+  ;; File associations (from the former modeselect.el).
+  (dolist (entry '(("\\.C\\'"    . c++-mode)
+                   ("\\.cc\\'"   . c++-mode)
+                   ("\\.cpp\\'"  . c++-mode)
+                   ("\\.hh\\'"   . c++-mode)
+                   ("\\.c\\'"    . c-mode)
+                   ("\\.h\\'"    . c-mode)
+                   ("\\.m\\'"    . objc-mode)
+                   ("\\.html\\'" . html-helper-mode)
+                   ("\\.mak\\'"  . makefile-mode)
+                   ("\\.java\\'" . java-mode)
+                   ("Makefile"   . makefile-mode)
+                   ("makefile"   . makefile-mode)))
+    (add-to-list 'auto-mode-alist entry))
+  (add-to-list 'interpreter-mode-alist '("sh"  . sh-mode))
+  (add-to-list 'interpreter-mode-alist '("csh" . csh-mode))
+  (autoload 'sh-mode "sh-script" "Generic Shell script editing mode" t))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Company
