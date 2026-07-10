@@ -2698,6 +2698,10 @@ Start `ielm' if it's not already running."
   (setq bidi-inhibit-bpa t)
   (global-so-long-mode 1)
 
+  ;; Save everything with desktop-mode; the default excludes tramp paths, which
+  ;; breaks saving tramp dired/files (from the former terminal.el).
+  (setq desktop-files-not-to-save "^$")
+
   ;; Keybindings (from the former keybindings.el).
   ;; Translate modified keypad up/down to plain arrows.
   (define-key function-key-map [M-kp-up] [M-up])
@@ -2732,7 +2736,14 @@ Start `ielm' if it's not already running."
     (add-to-list 'auto-mode-alist entry))
   (add-to-list 'interpreter-mode-alist '("sh"  . sh-mode))
   (add-to-list 'interpreter-mode-alist '("csh" . csh-mode))
-  (autoload 'sh-mode "sh-script" "Generic Shell script editing mode" t))
+  (autoload 'sh-mode "sh-script" "Generic Shell script editing mode" t)
+
+  ;; Color theme (from the former colors.el).  Loaded after the face settings
+  ;; above; if a package's face definitions ever clobber it, move this
+  ;; `load-theme' to `elpaca-after-init-hook'.
+  (add-to-list 'custom-theme-load-path
+               (expand-file-name "site-lisp/themes/hober2-theme" emacs-root))
+  (load-theme 'hober2 t))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Company
@@ -2781,6 +2792,17 @@ Start `ielm' if it's not already running."
 (use-package hydra
   :ensure t
   )
+
+;; Multi-host terminal launcher (vterm/ansi-term + a C-c t hydra).  A local
+;; package under lisp/term-launcher/.  Placed after hydra/vterm-reconnect so
+;; those are on load-path when it eagerly requires them.  Overlays add hosts via
+;; `(with-eval-after-load 'term-launcher ...)'.  See its README.
+;; To extract to its own repo later, replace :ensure nil + :load-path with:
+;;   :ensure (term-launcher :host github :repo "USER/term-launcher")
+(use-package term-launcher
+  :ensure nil
+  :load-path (lambda () (list (expand-file-name "lisp/term-launcher" emacs-root)))
+  :demand t)
 
 ;; (use-package helm
 ;;   :straight t
