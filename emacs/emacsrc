@@ -45,8 +45,8 @@
 ;; basic/editor/modes/expert behavior is now folded into the
 ;; `(use-package emacs ...)' block in packages.el.
 ;; (load-library "auth") ;; Authentication
-(load-library "modeselect") ;; smart mode selection
-(load-library "keybindings") ;; set up common keys
+;; keybindings + modeselect (file associations) are now folded into the
+;; `(use-package emacs ...)' block in packages.el.
 (load-library "compilemode") ;; set up C/C++ programming
 (load-library "doxymacsmode") ;; set up C/C++ programming
 (load-library "fontlock") ;; set up C/C++ programming
