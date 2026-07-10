@@ -187,6 +187,9 @@
 			org-info
 			org-habit))
     (org-load-modules-maybe t)
+    ;; from the former notes.el
+    (setq org-startup-indented t)
+    (add-hook 'org-mode-hook 'turn-on-font-lock)
     ;;(setq org-export-backends '(org latex beamer icalendar html md ascii))
 
     ;; Allow previewing TikZ sources.
@@ -727,16 +730,172 @@ PRIORITY may be one of the characters ?A, ?B, or ?C."
                                         ;(setq tramp-default-method "scpx")
   (setq tramp-default-method "ssh"))
 
-(require 'compile)
-;; (require 'diminish)  ;; if you use :diminish
-(require 'server)
+(use-package compile
+  :ensure nil
+  :config
+  (require 'ansi-color)
+  (defun my/ansi-colorize-buffer ()
+    (let ((buffer-read-only nil))
+      (ansi-color-apply-on-region (point-min) (point-max))))
+  (add-hook 'compilation-filter-hook 'my/ansi-colorize-buffer)
+  (setq compilation-search-path '(nil "./build/x86_64/devrel/llvm-project" "./build/x86_64/devdbg/llvm-project"))
+  ;; from the former compilemode.el
+  (setq compilation-error-regexp-alist '(clang-include gcc-include gnu))
+  (defun notify-compilation-result (buffer msg)
+    "Notify that the compilation is finished, and set the focus back to Emacs."
+    (if (string-match "^finished" msg)
+        (tooltip-show "\n Compilation Successful :-) \n ")
+      (tooltip-show "\n Compilation Failed :-( \n "))
+    (setq current-frame (car (car (cdr (current-frame-configuration)))))
+    (select-frame-set-input-focus current-frame)))
 
-(require 'ansi-color)
-(defun my/ansi-colorize-buffer ()
-  (let ((buffer-read-only nil))
-    (ansi-color-apply-on-region (point-min) (point-max))))
-(add-hook 'compilation-filter-hook 'my/ansi-colorize-buffer)
-(setq compilation-search-path '(nil "./build/x86_64/devrel/llvm-project" "./build/x86_64/devdbg/llvm-project"))
+;; Emacs server so a remote emacsclient can open files here (from eserver.el).
+(use-package server
+  :ensure nil
+  :demand t
+  :config
+  ;; The local (non-SSH) desktop Emacs hosts a server on a fixed unix socket,
+  ;; ~/.ssh/emacs-server.  ssh/config.external RemoteForwards that socket to the
+  ;; dev hosts, where emacs/emacsclient.py connects to it and rewrites the path
+  ;; to a /scp: TRAMP path so this Emacs opens the remote file.  Guard on
+  ;; SSH_CLIENT so a remote Emacs never clobbers the forwarded socket.
+  (unless (getenv "SSH_CLIENT")
+    (setq server-use-tcp nil)
+    (setq server-name "emacs-server")
+    (setq server-socket-dir (expand-file-name "~/.ssh"))
+    (ignore-errors
+      (unless (server-running-p)
+        (server-start)))))
+
+(use-package font-lock
+  :ensure nil
+  :config
+  (setq font-lock-maximum-decoration t)
+  (global-font-lock-mode t))
+
+;; browse-url: open URLs in the mac browser (from the former web.el).
+(use-package browse-url
+  :ensure nil
+  :init
+(defun browse-url-mac-chrome (url &optional _new-window)
+  "Open URL in Google Chrome.  I use AppleScript to do several things:
+  1. I tell Chrome to come to the front. If Chrome wasn't launched, this will also launch it.
+  2. If Chrome has no windows open, I tell it to create one.
+  3. If Chrome has a tab showing URL, I tell it to reload the tab, make that tab the active tab in its window, and bring its window to the front.
+  4. If Chrome has no tab showing URL, I tell Chrome to make a new tab (in the front window) showing URL."
+  (when (symbolp url)
+    ; User passed a symbol instead of a string.  Use the symbol name.
+    (setq url (symbol-name url)))
+  (do-applescript (format "
+tell application \"Google Chrome\"
+        activate
+        set theUrl to %S
+
+        if (count every window) = 0 then
+                make new window
+        end if
+
+        set found to false
+        set theTabIndex to -1
+        repeat with theWindow in every window
+                set theTabIndex to 0
+                repeat with theTab in every tab of theWindow
+                        set theTabIndex to theTabIndex + 1
+                        if theTab's URL = theUrl then
+                                set found to true
+                                exit
+                        end if
+                end repeat
+
+                if found then
+                        exit repeat
+                end if
+        end repeat
+
+        if found then
+                tell theTab to reload
+                set theWindow's active tab index to theTabIndex
+                set index of theWindow to 1
+        else
+                tell window 1 to make new tab with properties {URL:theUrl}
+        end if
+end tell
+  " url)))
+
+;; (defun browse-url-mac-chrome (url &optional _new-window)
+;;   "Browse URL in Chrome.
+
+;; Chrome protocol URL such as chrome://newtab is supported,
+;; unlike `browse-url-default-macosx-browser'."
+;;   (interactive (browse-url-interactive-arg "URL: "))
+;;   (do-applescript
+;;    (mapconcat
+;;     #'identity
+;;     ;; https://apple.stackexchange.com/a/271709/132365
+;;     `("set myLink to \"" ,url "\""
+;;       "tell application \"Google Chrome\""
+;;       "    activate"
+;;       "    tell front window to make new tab at after (get active tab) with properties {URL:myLink}"
+;;       "end tell")
+;;     "\n")))
+
+(cond
+ ((memq window-system '(mac ns))
+  (setq browse-url-browser-function 'browse-url-mac-chrome))
+ (t
+  (setq browse-url-browser-function 'w3m-browse-url))))
+
+;; Fonts and monospace inspection (from the former face.el).
+(use-package faces
+  :ensure nil
+  :config
+;;-bitstream-bitstream vera sans mono-medium-r-*-*-*-120-*-*-*-*-*-*
+
+;; Comment out for windows.
+(cond ((eq window-system 'w32)
+       (set-face-attribute 'default nil :font "-*-Consolas-medium-r-*-*-*-120-*-*-*-*-*-*"))
+      ((eq window-system 'ns)
+       ;;(set-face-attribute 'default nil :font "hack nerd font mono-14")
+       (set-face-attribute 'default nil :font "jetbrains mono-14")
+       )
+      (t (set-face-attribute 'default nil :font "bitstream vera sans mono-12")))
+
+(setq-default line-spacing 0)
+
+
+(defun font-is-mono-p (font-family)
+  ;; with-selected-window
+  (let ((wind (selected-window))
+        m-width l-width)
+   (with-output-to-temp-buffer "asdf"
+     (set-window-buffer (selected-window) (current-buffer))
+     (text-scale-set 4)
+     (insert (propertize "l l l l l" 'face `((:family ,font-family))))
+     (goto-char (line-end-position))
+     (setq l-width (car (posn-x-y (posn-at-point))))
+     (newline)
+     (forward-line)
+     (insert (propertize "m m m m m" 'face `((:family ,font-family) italic)))
+     (goto-char (line-end-position))
+     (setq m-width (car (posn-x-y (posn-at-point))))
+     (eq l-width m-width))))
+
+(defun compare-monospace-fonts ()
+  "Display a list of all monospace font faces."
+  (interactive)
+  (pop-to-buffer "*Monospace Fonts*")
+
+  (erase-buffer)
+  (let ((str "The quick brown fox jumps over the lazy dog ´`''\"\"1lI|¦!Ø0Oo{[()]}.,:; ")
+	(font-families (cl-remove-duplicates 
+			(sort (font-family-list) 
+			      (lambda(x y) (string< (upcase x) (upcase y))))
+			:test 'string=)))
+    (dolist (ff font-families)
+      (when (font-is-mono-p ff)
+	(insert
+	 (propertize str 'font-lock-face `(:family ,ff))               ff "\n"
+	 (propertize str 'font-lock-face `(:family ,ff :slant italic)) ff "\n"))))))
 
 (use-package whitespace
   :ensure nil
@@ -761,6 +920,10 @@ PRIORITY may be one of the characters ?A, ?B, or ?C."
                   fundamental-mode))
     (add-hook hook (lambda() (setq show-trailing-whitespace nil))))
     ;;(add-hook hook #'no-trailing-whitespace)
+  ;; Highlight questionable whitespace and 80+ columns (from the former face.el).
+  (setq whitespace-style '(face empty lines-tail trailing))
+  (setq whitespace-line-column 80)
+  (global-whitespace-mode 1)
   :diminish whitespace-mode)
 
 ;;(require 'whitespace)
@@ -1989,6 +2152,42 @@ Start `ielm' if it's not already running."
 ;;   :ensure nil
 ;;   :init (define-key c-mode-map (kbd "C-c f") 'etags-select-find-tag))
 
+(use-package cc-mode
+  :ensure nil
+  :init
+;; LLVM coding style guidelines in emacs
+;; Maintainer: LLVM Team, http://llvm.org/
+
+(defun llvm-lineup-statement (langelem)
+  (let ((in-assign (c-lineup-assignments langelem)))
+    (if (not in-assign)
+        '++
+      (aset in-assign 0
+            (+ (aref in-assign 0)
+               (* 2 c-basic-offset)))
+      in-assign)))
+
+;; Add a cc-mode style for editing LLVM C and C++ code
+(c-add-style "llvm.org"
+             '("gnu"
+	       (fill-column . 80)
+	       (c++-indent-level . 2)
+	       (c-basic-offset . 2)
+	       (indent-tabs-mode . nil)
+	       (c-offsets-alist . ((arglist-intro . ++)
+				   (innamespace . 0)
+				   (member-init-intro . ++)
+				   (statement-cont . llvm-lineup-statement)))))
+
+;; Files with "llvm" in their names will automatically be set to the
+;; llvm.org coding style.
+(add-hook 'c-mode-common-hook
+	  (function
+	   (lambda nil 
+	     (if (string-match "llvm" buffer-file-name)
+		 (progn
+		   (c-set-style "llvm.org")))))))
+
 (use-package paredit
   :ensure t
   :config
@@ -2670,7 +2869,9 @@ Start `ielm' if it's not already running."
   :config
   ;; TODO: Make this parameterizable per-project.
   (let ((gud-gdb-executable my-gud-gdb-executable))
-    (setq gud-gud-gdb-command-name (concat "--fullname"))))
+    (setq gud-gud-gdb-command-name (concat "--fullname")))
+  ;; from the former gudmode.el (the effective variable)
+  (setq gud-gdb-command-name "gdb -i=mi"))
 
 (use-package vlf-setup
   :ensure vlf
