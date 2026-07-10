@@ -771,63 +771,10 @@ PRIORITY may be one of the characters ?A, ?B, or ?C."
 ;; each 50MB of allocated data (the default is on every 0.76MB)
 ;;(setq gc-cons-threshold 50000000)
 
-;; nice scrolling
-(setq scroll-margin 0
-      scroll-conservatively 100000
-      scroll-preserve-screen-position 1)
-
-;; mode line settings
-(line-number-mode t)
-(column-number-mode t)
-(size-indication-mode t)
-
-;; enable y/n answers
-(fset 'yes-or-no-p 'y-or-n-p)
-
-;; more useful frame title, that show either a file or a
-;; buffer name (if the buffer isn't visiting a file)
-(setq frame-title-format
-      '((:eval (if (buffer-file-name)
-                   (abbreviate-file-name (buffer-file-name))
-                 "%b"))))
-
-;; Emacs modes typically provide a standard means to change the
-;; indentation width -- eg. c-basic-offset: use that to adjust your
-;; personal indentation width, while maintaining the style (and
-;; meaning) of any files you load.
-(setq-default indent-tabs-mode nil)   ;; don't use tabs to indent
-(setq-default tab-width 8)            ;; but maintain correct appearance
-
-;; Newline at end of file
-(setq require-final-newline t)
-
-;; Wrap lines at 80 characters
-(setq-default fill-column 80)
-
-;; hippie expand is dabbrev expand on steroids
-(setq hippie-expand-try-functions-list '(try-expand-dabbrev
-                                         try-expand-dabbrev-all-buffers
-                                         try-expand-dabbrev-from-kill
-                                         try-complete-file-name-partially
-                                         try-complete-file-name
-                                         try-expand-all-abbrevs
-                                         try-expand-list
-                                         try-expand-line
-                                         try-complete-lisp-symbol-partially
-                                         try-complete-lisp-symbol))
-
-;; use hippie-expand instead of dabbrev
-(global-set-key (kbd "M-/") #'hippie-expand)
-(global-set-key (kbd "s-/") #'hippie-expand)
-
-;; replace buffer-menu with ibuffer
-(global-set-key (kbd "C-x C-b") #'ibuffer)
-
-;; align code in a pretty way
-(global-set-key (kbd "C-x \\") #'align-regexp)
-
-;; smart tab behavior - indent or complete
-(setq tab-always-indent 'complete)
+;; NOTE: global settings (scrolling, mode line, frame title, indentation,
+;; hippie-expand, the M-/, C-x C-b, C-x \ keybindings, etc.) now live in the
+;; `(use-package emacs ...)' block below, consolidated with the former
+;; basic.el / editor.el / modes.el / expert.el.
 
 ;; Built-in packages
 
@@ -2436,7 +2383,96 @@ Start `ielm' if it's not already running."
                      #'consult-completion-in-region
                    #'completion--in-region)
                  args)))
-  (add-hook 'prog-mode-hook #'completion-preview-mode))
+  (add-hook 'prog-mode-hook #'completion-preview-mode)
+
+  ;; --------------------------------------------------------------------------
+  ;; Global settings, consolidated here from the former basic.el / editor.el /
+  ;; modes.el / expert.el and the loose block that used to live earlier in this
+  ;; file.  Dropped in the move: obsolete/no-op settings (`default-major-mode',
+  ;; `w32-get-true-file-attributes') and old emacs-version guards.
+  ;; --------------------------------------------------------------------------
+
+  ;; Nice scrolling.
+  (setq scroll-margin 0
+        scroll-conservatively 100000
+        scroll-preserve-screen-position 1)
+
+  ;; Mode line.
+  (line-number-mode t)
+  (column-number-mode t)
+  (size-indication-mode t)
+  (setq display-time-24hr-format nil
+        display-time-day-and-date 1)
+  (display-time)
+
+  ;; Answer prompts with y/n; stop policing "expert" commands.
+  (fset 'yes-or-no-p 'y-or-n-p)
+  (setq disabled-command-function nil)
+  (dolist (cmd '(upcase-region downcase-region eval-expression erase-buffer
+                 narrow-to-region narrow-to-page set-goal-column))
+    (put cmd 'disabled nil))
+  (define-key query-replace-map [return] 'act)
+  (define-key query-replace-map "\C-m" 'act)
+  (setq dired-no-confirm
+        '(byte-compile chgrp chmod chown compress copy delete hardlink
+                       load move print shell symlink uncompress))
+
+  ;; No menu/tool/tooltip bars.
+  (menu-bar-mode 0)
+  (tool-bar-mode 0)
+  (tooltip-mode 0)
+
+  ;; Frame title: abbreviated file path, or buffer name if not visiting a file.
+  (setq frame-title-format
+        '((:eval (if (buffer-file-name)
+                     (abbreviate-file-name (buffer-file-name))
+                   "%b"))))
+
+  ;; Indentation: spaces, 8-wide display, wrap at 80, left justification.
+  (setq-default indent-tabs-mode nil)
+  (setq-default tab-width 8)
+  (setq-default fill-column 80)
+  (setq-default default-justification 'left)
+  (setq require-final-newline t)
+  (setq tab-always-indent 'complete)
+
+  ;; hippie-expand instead of dabbrev.
+  (setq hippie-expand-try-functions-list '(try-expand-dabbrev
+                                           try-expand-dabbrev-all-buffers
+                                           try-expand-dabbrev-from-kill
+                                           try-complete-file-name-partially
+                                           try-complete-file-name
+                                           try-expand-all-abbrevs
+                                           try-expand-list
+                                           try-expand-line
+                                           try-complete-lisp-symbol-partially
+                                           try-complete-lisp-symbol))
+  (global-set-key (kbd "M-/") #'hippie-expand)
+  (global-set-key (kbd "s-/") #'hippie-expand)
+  (global-set-key (kbd "C-x C-b") #'ibuffer)
+  (global-set-key (kbd "C-x \\") #'align-regexp)
+
+  ;; Misc behavior.
+  (setq visible-bell t)
+  (setq auto-save-default nil)
+  (setq find-file-existing-other-name t)
+  (setq search-highlight t)
+  (setq query-replace-highlight t)
+  (setq track-eol t)
+  (setq sentence-end-double-space t)
+  (auto-compression-mode 1)
+  (transient-mark-mode 1)
+  (setq server-temp-file-regexp
+        "\\(.*/tmp/.*\\|\\(.*/\\)?\.\\(article\\|letter\\)\\)$")
+  (setq mm-automatic-display
+        '("text/plain" "text/enriched" "text/richtext"
+          "image/.*" "message/delivery-status" "multipart/.*" "message/rfc822"
+          "text/x-patch" "application/pgp-signature" "application/emacs-lisp"))
+
+  ;; Editor: force left-to-right, and speed up buffers with very long lines.
+  (setq bidi-paragraph-direction 'left-to-right)
+  (setq bidi-inhibit-bpa t)
+  (global-so-long-mode 1))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Company

@@ -42,12 +42,10 @@
 (print load-path)
 
 (load-library "packages") ;; Package manager
-(load-library "basic") ;; basic behavior setup
-(load-library "editor") ;; basic editor behavior setup
+;; basic/editor/modes/expert behavior is now folded into the
+;; `(use-package emacs ...)' block in packages.el.
 ;; (load-library "auth") ;; Authentication
-(load-library "modes") ;; turn on various minor modes
 (load-library "modeselect") ;; smart mode selection
-(load-library "expert") ;; turn some helpers off
 (load-library "keybindings") ;; set up common keys
 (load-library "compilemode") ;; set up C/C++ programming
 (load-library "doxymacsmode") ;; set up C/C++ programming
