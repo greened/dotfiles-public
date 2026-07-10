@@ -51,15 +51,13 @@
 ;; face, llvm-emacs, and eserver are now folded into use-package blocks in
 ;; packages.el (compile/font-lock/browse-url/faces/server + the gud, org,
 ;; whitespace and cc-mode blocks).
-(load-library "google-c-style") ;; set up Google style
-(load-library "tablegen-mode") ;; set up LLVM
-(load-library "llvm-mode") ;; set up LLVM
+;; google-c-style, llvm-mode, tablegen-mode (vendored, no upstream package) and
+;; boxquote (now from MELPA) are use-package blocks in packages.el.
 (load-library "terminal") ;; ansi-term
 ;; mail.el is now folded into use-package blocks in packages.el (notmuch,
 ;; smtpmail-multi, mm-decode); it also provides the `mail' marker that overlays
 ;; hook with `(with-eval-after-load 'mail ...)'.
 (load-library "colors") ;; Set colors
-(load-library "boxquote")
 
 (custom-set-variables
  ;; custom-set-variables was added by Custom.
