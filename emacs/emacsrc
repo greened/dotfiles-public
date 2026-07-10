@@ -55,7 +55,9 @@
 (load-library "tablegen-mode") ;; set up LLVM
 (load-library "llvm-mode") ;; set up LLVM
 (load-library "terminal") ;; ansi-term
-(load-library "mail") ;; SMTP
+;; mail.el is now folded into use-package blocks in packages.el (notmuch,
+;; smtpmail-multi, mm-decode); it also provides the `mail' marker that overlays
+;; hook with `(with-eval-after-load 'mail ...)'.
 (load-library "colors") ;; Set colors
 (load-library "boxquote")
 
