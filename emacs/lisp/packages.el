@@ -1881,8 +1881,33 @@ Start `ielm' if it's not already running."
   )
 
 (use-package boxquote
-;;  :straight t
-  )
+  :ensure t)
+
+;; -------------------------------------------------------------------------
+;; Vendored third-party modes with no standalone upstream package.  The .el
+;; files live in site-lisp/vendored/; refresh the LLVM ones from upstream with
+;; site-lisp/vendored/update-from-upstream.sh.  See that dir's README.
+;; -------------------------------------------------------------------------
+
+;; Google C/C++ style.  Loaded eagerly (:demand) so the "Google" style is
+;; registered before overlays add styles that inherit from it (e.g. the Cerebras
+;; monolith-c-style).  On MELPA, but kept vendored because elpaca loads async
+;; (after-init) -- too late for that overlay style inheritance.
+(use-package google-c-style
+  :ensure nil
+  :load-path (lambda () (list (expand-file-name "site-lisp/vendored" emacs-root)))
+  :demand t)
+
+;; LLVM IR + TableGen modes (from llvm-project/llvm/utils/emacs/; no MELPA pkg).
+(use-package llvm-mode
+  :ensure nil
+  :load-path (lambda () (list (expand-file-name "site-lisp/vendored" emacs-root)))
+  :mode (("\\.ll\\'" . llvm-mode) ("\\.llx\\'" . llvm-mode)))
+
+(use-package tablegen-mode
+  :ensure nil
+  :load-path (lambda () (list (expand-file-name "site-lisp/vendored" emacs-root)))
+  :mode ("\\.td\\'" . tablegen-mode))
 
 ;; (use-package rmsbolt
 ;;   :straight t)
