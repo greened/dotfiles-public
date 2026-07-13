@@ -3454,226 +3454,42 @@ subproject."
   ;; On a machine without the local checkout, elpaca clones github's default branch.
   :ensure (:fetcher github :repo "greened/quite" :try-local t)
   :config
-  (progn
-    (defun generate-build-defun (name
-                                 command
-                                 git-project-name
-                                 &optional
-                                 prefix
-                                 postfix)
-      "Given a NAME and a git-project COMMAND, return a function
-      that invokes git-project with that command when invoked
-      with project descriptor components and the dispatch tag."
-      (let ((loc-name name)
-            (loc-command command)
-            (loc-command-template (format
-                                   "%s git %s %%s %%s %s"
-                                   (or prefix "")
-                                   git-project-name
-                                   (or postfix ""))))
-        (lambda (host-user-method root subdir buffer tag)
-          (let ((actual-tag tag))
-            (compile (format loc-command-template loc-command actual-tag))))))
+  ;; The generic build-composition machinery now lives in the quite package
+  ;; (`quite-define-project' and friends).  What remains here is the shared
+  ;; build vocabulary the per-project hydras consume (they are defined in
+  ;; overlays, which call `quite-define-project'), plus the prefix under which
+  ;; the resulting commands are reachable.
+  (setq configure-key "f")
+  (setq build-key "b")
+  (setq install-key "i")
+  (setq check-key "k")
+  (setq benchmark-key "m")
+  (setq bic-key "q")
 
-    ;;     (defun zip (list-a list-b)
-    ;;       "Generate a zipped list consisting of elements of LIST-A
-    ;; and LIST-B.  Only generate elements up to the end of one of the
-    ;; lists.  Elements in the longer list are ignored."
-    ;;       (cond
-    ;;        ((or (null list-a) (null list-b)) ())
-    ;;        (t (let ((item-a (car list-a))
-    ;;                 (item-b (car list-b)))
-    ;;             (let* ((list-item (list item-a item-b))
-    ;;                    (zip-item (zip (cdr list-a) (cdr list-b))))
-    ;;               (cons list-item zip-item))))))
+  (setq command-plist-list
+        `((:name "configure" :command "configure" :key ,configure-key)
+          (:name "build" :command "build" :key ,build-key)
+          (:name "check" :command "check" :key ,check-key)
+          (:name "install" :command "install" :key ,install-key)
+          (:name "benchmark" :command "benchmark" :key ,benchmark-key)
+          (:name "bic" :command "bic" :key ,bic-key)))
 
-    (defun broadcast-function-to-tag-function-alist (command-func flavor-list)
-      (message "flavor-list: %s" flavor-list)
-      (mapcar (lambda (flavor)
-                `(,flavor ,command-func))
-              flavor-list))
+  (setq git-be-name "be")
 
-    (defun generate-buffer-name-defun (project-name name)
-      "Given a NAME component of the eventual buffer name, return
-      a function that generates a buffer name from project
-      descriptor components and the dispatch tag."
-      (let ((loc-project-name project-name)
-            (loc-name name))
-        (lambda (host root subdir buffer tag)
-          (format "*%s-%s-%s-%s-%s*"
-                  loc-project-name
-                  loc-name
-                  subdir
-                  tag
-                  (nth 0 (split-string host "\\."))))))
+  ;; Prefixes: the list ORDER is the prefix-argument (C-u) dispatch index --
+  ;; element 0 runs with no prefix, element 1 with one C-u, and so on.
+  (setq prefix-plist-list '("devrel" "devdbg"))
 
-    ;; (defun bind-project-keys
-    ;;     (project-name project-descriptor command-list prefix-key)
-    ;;   (dolist (item command-list)
-    ;;     (let* ((name (nth 0 item))
-    ;;            (command (nth 1 item))
-    ;;            (flavor-list-list (nth 2 item))
-    ;;            (key-list (nth 3 item))
-    ;;            (build-func (generate-build-defun name command))
-    ;;            (buffer-name-func (generate-buffer-name-defun project-name name))
-    ;;            ;; Create a list of (key flavor-list) pairs.
-    ;;            (key-flavor-list-list (zip key-list flavor-list-list)))
-    ;;       (dolist (key-flavor-list key-flavor-list-list)
-    ;;         (let* ((key (nth 0 key-flavor-list))
-    ;;                (flavor-list (nth 1 key-flavor-list))
-    ;;                (tag-function-alist
-    ;;                 (broadcast-function-to-tag-function-alist
-    ;;                  build-func flavor-list)))
-    ;;           ;; TODO: Support proper keymaps.
-    ;;           (global-set-key (kbd (concat "C-c " prefix-key key))
-    ;;                           (quite-generate-buffer-dispatcher
-    ;;                            project-descriptor
-    ;;                            buffer-name-func
-    ;;                            tag-function-alist)))))))
+  (setq transform-plist-list '((:name "local" :func identity)
+                               (:name "cluster" :func upcase)))
 
-    ;; Hydra support
+  ;; Abbreviations for hydra head labels (applied in order).
+  (setq quite-flavor-abbreviations
+        '(("all-llvm-build" . "le") ("all-" . "") ("up" . "u") ("dbg" . "d")
+          ("rel" . "r") ("dev" . "d") ("cluster" . "cl") ("local" . "lo")))
 
-    (defun shorten-flavor (list)
-      (mapcar
-       (lambda (item)
-         (replace-regexp-in-string
-          "local" "lo"
-          (replace-regexp-in-string
-           "cluster" "cl"
-           (replace-regexp-in-string
-            "dev" "d"
-            (replace-regexp-in-string
-             "rel" "r"
-             (replace-regexp-in-string
-              "dbg" "d"
-              (replace-regexp-in-string
-               "up" "u"
-               (replace-regexp-in-string
-                "all-" ""
-                (replace-regexp-in-string "all-llvm-build" "le" item))))))))) list))
-
-    ;; (defun generate-hydra-heads (project-name command-list)
-    ;;   (let ((result '()))
-    ;;     (dolist (item command-list result)
-    ;;       (let* ((name (nth 0 item))
-    ;;              (command (nth 1 item))
-    ;;              (flavor-list-list (nth 2 item))
-    ;;              (key-list (nth 3 item))
-    ;;              ;; Create a list of (key flavor-list) pairs.
-    ;;              (key-flavor-list-list (zip key-list flavor-list-list)))
-    ;;         (dolist (key-flavor-list key-flavor-list-list)
-    ;;           (let* ((key (nth 0 key-flavor-list))
-    ;;                  (flavor-list (nth 1 key-flavor-list))
-    ;;                  (description (format "%s" (mapconcat 'identity (shorten-flavor flavor-list) " ")))
-    ;;                  (column (format "%s %s" project-name name)))
-    ;;             ;; Hydrra head: (KEY FUNC DESC :column COLUMN)
-    ;;             (setq result (append result
-    ;;                                  `((,key
-    ;;                                     ,(key-binding
-    ;;                                       (kbd (concat "C-c " key)))
-    ;;                                     ,description
-    ;;                                     :column
-    ;;                                     ,column))))))))))
-
-    ;; Project composition
-    (defun compose-project
-        (git-project-name
-         project-name
-         project-descriptor
-         prefix-key
-         target
-         commands-plist-list
-         prefix-plist-list
-         transform-plist-list
-         &optional
-         command-prefix
-         command-postfix)
-      (let ((result '()))
-        (dolist (command-plist commands-plist-list result)
-          (let* ((command-name (plist-get command-plist :name))
-                 (command (plist-get command-plist :command))
-                 (command-key (plist-get command-plist :key))
-                 (build-func
-                  (generate-build-defun command-name
-                                        command git-project-name
-                                        command-prefix
-                                        command-postfix))
-                 (buffer-name-func (generate-buffer-name-defun project-name
-                                                               command-name)))
-            (dolist (transform-plist transform-plist-list)
-              (let ((transform-name (plist-get transform-plist :name))
-                    (transform-func (plist-get transform-plist :func))
-                    (flavor-list '()))
-                (dolist (prefix-plist prefix-plist-list)
-                  (let* ((prefix-name (plist-get prefix-plist :name))
-                         (prefix-prefix (plist-get prefix-plist :prefix))
-                         (flavor-name (format "%s-%s-%s"
-                                              target prefix-name transform-name)))
-                    (setq flavor-list (append flavor-list (list flavor-name)))))
-                (let ((tag-function-alist
-                       (broadcast-function-to-tag-function-alist build-func
-                                                                 flavor-list))
-                      (description (format "%s"
-                                           (mapconcat 'identity
-                                                      (shorten-flavor flavor-list)
-                                                      " ")))
-                      (column (format "%s %s" project-name command-name)))
-                  ;; TODO: Support proper keymaps.
-                  (global-set-key (kbd (concat "C-c "
-                                               prefix-key
-                                               (funcall transform-func
-                                                        command-key)))
-                                  (quite-generate-buffer-dispatcher
-                                   project-descriptor
-                                   buffer-name-func
-                                   tag-function-alist))
-                  ;; Hydra head: (KEY FUNC DESC :column COLUMN)
-                  (setq result (append result
-                                       `((,(funcall transform-func command-key)
-                                          ,(key-binding
-                                            (kbd (concat "C-c "
-                                                         prefix-key
-                                                         (funcall transform-func
-                                                                  command-key))))
-                                          ,description
-                                          :column
-                                          ,column)))))))))))
-
-    ;; Common keys.
-    (setq configure-key "f")
-    (setq build-key "b")
-    (setq install-key "i")
-    (setq check-key "k")
-    (setq benchmark-key "m")
-    (setq bic-key "q")
-
-    ;; Build configuration.  There are a number of different build targets and
-    ;; various flavors of each target build.  For each kind of build we want to
-    ;; allow two kinds of builds: a release build and a debug build.
-    ;;
-    ;; We'll bind keys to each build kind and use a prefix argument to determine
-    ;; whether we do a release (no prefix) or debug (one prefix) build.
-
-    (setq command-plist-list
-          `((:name "configure" :command "configure" :key ,configure-key)
-            (:name "build" :command "build" :key ,build-key)
-            (:name "check" :command "check" :key ,check-key)
-            (:name "install" :command "install" :key ,install-key)
-            (:name "benchmark" :command "benchmark" :key ,benchmark-key)
-            (:name "bic" :command "bic" :key ,bic-key)))
-
-    ;; Shared
-    (setq git-be-name "be")
-
-    (setq prefix-plist-list '((:name "devrel" :prefix 0)
-                              (:name "devdbg" :prefix 1)))
-
-    (setq transform-plist-list '((:name "local" :func identity)
-                                 (:name "cluster" :func upcase)))
-
-    ;; Project-specific build hydras (employer and personal source trees)
-    ;; live in overlays; they use the generic `compose-project' machinery
-    ;; defined above.
-    ))
+  ;; Reach the project build commands (populated by overlays via
+  ;; `quite-define-project') under this prefix.
+  (global-set-key (kbd "C-c q") quite-command-map))
 
 (elpaca-wait)
