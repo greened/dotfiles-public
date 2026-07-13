@@ -3446,7 +3446,13 @@ subproject."
   )
 
 (use-package quite
-  :ensure (:fetcher github :branch "dev" :repo "greened/quite" :try-local t)
+  ;; Deliberately NO :branch.  With a local `:try-local' checkout, omitting
+  ;; :branch means elpaca's `elpaca-git--checkout-ref' sees a nil target and
+  ;; runs no `git checkout' at all, so it uses the working tree as-is and never
+  ;; resets in-progress/unpushed work.  (A `:branch' would make elpaca run
+  ;; `checkout -B <branch> --track origin/<branch>', which resets the branch.)
+  ;; On a machine without the local checkout, elpaca clones github's default branch.
+  :ensure (:fetcher github :repo "greened/quite" :try-local t)
   :config
   (progn
     (defun generate-build-defun (name
