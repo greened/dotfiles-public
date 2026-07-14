@@ -670,6 +670,11 @@ PRIORITY may be one of the characters ?A, ?B, or ?C."
   (setq tramp-default-method "ssh")
   (setq tramp-shell-prompt-pattern "\\(?:^\\|\r\\)[^]#$%>\n]*#?[]#$%>].* *\\(^[\\[[0-9;]*[a-zA-Z] *\\)*")
 
+  ;; The dev-VM link can be slow or mid-reconnect at startup; give the
+  ;; connection handshake longer than the 60s default before it errors with
+  ;; "Couldn't find exit status of `echo ...getconf PATH...'".
+  (setq tramp-connection-timeout 120)
+
   (setq vc-ignore-dir-regexp
         (format "\\(%s\\)\\|\\(%s\\)"
 	        vc-ignore-dir-regexp
