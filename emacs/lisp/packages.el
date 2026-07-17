@@ -3497,4 +3497,12 @@ subproject."
   ;; `quite-define-project') under this prefix.
   (global-set-key (kbd "C-c q") quite-command-map))
 
+(use-package prevue
+  ;; GitHub PR review queue and ediff/unified/panel review modes.  No :branch
+  ;; (see quite above): a local :try-local checkout under ~/projects is used
+  ;; as-is; on a machine without it, elpaca clones the default branch.  ghub
+  ;; is pulled automatically from prevue's Package-Requires.
+  :ensure (:fetcher github :repo "greened/prevue" :try-local t)
+  :bind ("C-c p" . prevue))
+
 (elpaca-wait)
