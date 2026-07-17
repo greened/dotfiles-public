@@ -3503,6 +3503,6 @@ subproject."
   ;; as-is; on a machine without it, elpaca clones the default branch.  ghub
   ;; is pulled automatically from prevue's Package-Requires.
   :ensure (:fetcher github :repo "greened/prevue" :try-local t)
-  :bind ("C-c p" . prevue))
+  :bind-keymap ("C-c p" . prevue-command-map))
 
 (elpaca-wait)
