@@ -3298,10 +3298,10 @@ Start `ielm' if it's not already running."
 (use-package gptel
   :ensure t
   :bind
-  ("C-c g l" . gptel)
-  ("C-c g r" . gptel-rewrite)
-  ("C-c g s" . my/gptel-model-switch)
-  ("C-c g m" . gptel-menu)
+  ("C-c G l" . gptel)
+  ("C-c G r" . gptel-rewrite)
+  ("C-c G s" . my/gptel-model-switch)
+  ("C-c G m" . gptel-menu)
   :config
   (setq gptel-api-key (llm-api-key "openai.com"))
 
@@ -3501,5 +3501,11 @@ subproject."
   ;; is pulled automatically from prevue's Package-Requires.
   :ensure (:fetcher github :repo "greened/prevue" :try-local t)
   :bind-keymap ("C-c p" . prevue-command-map))
+
+(use-package gaffer
+  ;; Orchestrates PR/change work across prevue + a build/test backend +
+  ;; magit.  Local :try-local checkout under ~/projects, like prevue/quite.
+  :ensure (:fetcher github :repo "greened/gaffer" :try-local t)
+  :bind-keymap ("C-c g" . gaffer-command-map))
 
 (elpaca-wait)
