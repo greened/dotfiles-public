@@ -6,6 +6,7 @@
 import getpass
 import os
 from pathlib import Path
+import re
 import sys
 import socket
 import subprocess
@@ -27,14 +28,20 @@ passthrough = sys.argv[1:]            # drop argv[0] (this script)
 file = passthrough.pop()              # last arg is the file to open
 args += passthrough                   # remaining flags (e.g. -n)
 
-if ssh_running():
+# A path that already carries a TRAMP prefix (e.g. /scp:h:, /ssh:h:, /-:h:) is
+# meant to be opened as-is; wrapping it again would double-wrap
+# (/scp:h:/-:h:/path) and the far Emacs would treat the inner path as a bogus
+# localname.
+already_tramp = bool(re.match(r'/[^/]*:', file))
+
+if ssh_running() and not already_tramp:
     # Remote shell: rewrite to a /scp: TRAMP path so the local Emacs opens the
     # file over scp back to this host.
     hostname = socket.gethostname()
     user = getpass.getuser()
     args += [f'/scp:{user}@{hostname}:{file}']
 else:
-    # Local shell: same Emacs server, plain path.
+    # Local shell, or an already-TRAMP path: pass it through unchanged.
     args += [file]
 
 print(args)
