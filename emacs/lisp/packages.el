@@ -3164,13 +3164,10 @@ Start `ielm' if it's not already running."
 
 ;; Prompt for GPG passphrases in the minibuffer via loopback when no external
 ;; pinentry can reach us (GUI emacs, or auth-source-pass decrypting a `pass'
-;; entry).  Requires `allow-loopback-pinentry' in gpg-agent.conf.
+;; entry).  Requires `allow-loopback-pinentry' in gpg-agent.conf.  External gpg
+;; (pass/auth-source) uses pinentry-mac via `pinentry-program' there; we no
+;; longer run the emacs-pinentry server, which could hang on a deleted buffer.
 (setq epg-pinentry-mode 'loopback)
-
-(use-package pinentry
-  :ensure t
-  :defer nil
-  :config (pinentry-start))
 
 ;; Notify on mail.
 ;; (use-package gnus-desktop-notify
