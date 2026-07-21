@@ -3500,7 +3500,9 @@ subproject."
   ;; as-is; on a machine without it, elpaca clones the default branch.  ghub
   ;; is pulled automatically from prevue's Package-Requires.
   :ensure (:fetcher github :repo "greened/prevue" :try-local t)
-  :bind-keymap ("C-c p" . prevue-command-map))
+  :bind-keymap ("C-c p" . prevue-command-map)
+  ;; threads sidebar splits horizontally (below the review), not to the right
+  :custom (prevue-threads-side 'below))
 
 (use-package gaffer
   ;; Orchestrates PR/change work across prevue + a build/test backend +
