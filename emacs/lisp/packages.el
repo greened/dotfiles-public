@@ -3501,8 +3501,10 @@ subproject."
   ;; is pulled automatically from prevue's Package-Requires.
   :ensure (:fetcher github :repo "greened/prevue" :try-local t)
   :bind-keymap ("C-c p" . prevue-command-map)
-  ;; threads sidebar splits horizontally (below the review), not to the right
-  :custom (prevue-threads-side 'below))
+  ;; threads sidebar splits horizontally (below the review), not to the right;
+  ;; drop needs-rereview PRs whose only new activity is discussion (empty diff)
+  :custom ((prevue-threads-side 'below)
+           (prevue-drop-empty-rereview t)))
 
 (use-package gaffer
   ;; Orchestrates PR/change work across prevue + a build/test backend +
