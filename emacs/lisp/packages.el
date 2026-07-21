@@ -3512,4 +3512,55 @@ subproject."
   :ensure (:fetcher github :repo "greened/gaffer" :try-local t)
   :bind-keymap ("C-c g" . gaffer-command-map))
 
+;; Slack.  This is the generic, workspace-agnostic setup -- install, settings,
+;; the README keybindings, and auto-start -- so Slack is usable regardless of
+;; which overlays are active (work or personal).  Each workspace's
+;; `slack-register-team' lives in an overlay, hooked via
+;; `(with-eval-after-load 'slack ...)' (see the cerebras overlay).
+(use-package slack
+  :ensure (slack :host github :repo "yuya373/emacs-slack")
+  ;; `:bind' would flip this to deferred loading; `:demand' keeps it eager so
+  ;; `:config' (the auto-start hook) runs at init, and an overlay's
+  ;; `with-eval-after-load' team registration fires.
+  :demand t
+  :init
+  (setq slack-buffer-emojify t)
+  (setq slack-prefer-current-team t)
+  ;; nil: don't auto-create a room's buffer on notify -- creating a message
+  ;; buffer marks the room read (conversations.mark to latest), silently
+  ;; consuming unreads on high-traffic channels.  Rooms stay unread until opened.
+  (setq slack-buffer-create-on-notify nil)
+  :bind (("C-c S K" . slack-stop)
+         ("C-c S c" . slack-select-rooms)
+         ("C-c S u" . slack-select-unread-rooms)
+         ("C-c S U" . slack-user-select)
+         ("C-c S s" . slack-search-from-messages)
+         ("C-c S J" . slack-jump-to-browser)
+         ("C-c S j" . slack-jump-to-app)
+         ("C-c S e" . slack-insert-emoji)
+         ("C-c S E" . slack-message-edit)
+         ("C-c S r" . slack-message-add-reaction)
+         ("C-c S t" . slack-thread-show-or-create)
+         ("C-c S g" . slack-message-redisplay)
+         ("C-c S G" . slack-conversations-list-update-quick)
+         ("C-c S q" . slack-quote-and-reply)
+         ("C-c S Q" . slack-quote-and-reply-with-link)
+         (:map slack-mode-map
+               ("@" . slack-message-embed-mention)
+               ("#" . slack-message-embed-channel))
+         (:map slack-thread-message-buffer-mode-map
+               ("C-c '" . slack-message-write-another-buffer)
+               ("@" . slack-message-embed-mention)
+               ("#" . slack-message-embed-channel))
+         (:map slack-message-buffer-mode-map
+               ("C-c '" . slack-message-write-another-buffer))
+         (:map slack-message-compose-buffer-mode-map
+               ("C-c '" . slack-message-send-from-buffer)))
+  :config
+  ;; Teams are registered by overlays; start whatever is registered once init
+  ;; settles.  Deferred via an idle timer so the token's gpg/pinentry can
+  ;; display in a live UI rather than blocking init.
+  (add-hook 'elpaca-after-init-hook
+            (lambda () (run-with-idle-timer 1 nil #'slack-start))))
+
 (elpaca-wait)
