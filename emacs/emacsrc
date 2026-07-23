@@ -76,6 +76,12 @@
  ;; If there is more than one, they won't work right.
  )
 
-;; Overlays, loaded after the base config.
+;; Overlays, loaded after the base config.  Wrap each load so one erroring
+;; overlay (e.g. a token-consuming block failing when its secret can't be
+;; read) is skipped with a warning instead of aborting the whole batch.
 (dolist (f (file-expand-wildcards (expand-file-name "~/lib/dotfiles-overlays/*/emacs/*.el")))
-  (load f t))
+  (condition-case err
+      (load f t)
+    (error (display-warning 'dotfiles-overlays
+                            (format "failed to load overlay %s: %S" f err)
+                            :error))))

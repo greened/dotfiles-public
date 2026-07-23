@@ -3500,6 +3500,10 @@ subproject."
   ;; as-is; on a machine without it, elpaca clones the default branch.  ghub
   ;; is pulled automatically from prevue's Package-Requires.
   :ensure (:fetcher github :repo "greened/prevue" :try-local t)
+  ;; Load eagerly: the MCP server calls prevue-*-json entrypoints directly,
+  ;; and those aren't autoloaded, so :bind-keymap alone leaves them void until
+  ;; the C-c p prefix is first used.
+  :demand t
   :bind-keymap ("C-c p" . prevue-command-map)
   ;; threads sidebar splits horizontally (below the review), not to the right;
   ;; drop needs-rereview PRs whose only new activity is discussion (empty diff)
@@ -3510,6 +3514,9 @@ subproject."
   ;; Orchestrates PR/change work across prevue + a build/test backend +
   ;; magit.  Local :try-local checkout under ~/projects, like prevue/quite.
   :ensure (:fetcher github :repo "greened/gaffer" :try-local t)
+  ;; Load eagerly: like prevue, the MCP server calls gaffer entrypoints
+  ;; directly, so :bind-keymap alone would leave them void on a cold Emacs.
+  :demand t
   :bind-keymap ("C-c g" . gaffer-command-map))
 
 ;; Slack.  This is the generic, workspace-agnostic setup -- install, settings,
