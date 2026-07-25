@@ -82,7 +82,9 @@ or, in one line:
 applies to this machine, **suggests an apply order and lets you confirm or reorder
 it**, clones them, and runs the base `link.sh`.  The chosen order is recorded in
 `~/lib/dotfiles-overlays/.order` so re-runs are stable.  Matches against the FQDN
-by default; pass a hostname to override.  Re-run any time to update.
+by default; pass a hostname to override.  Re-run any time to update.  Finally, if
+a Claude-config manifest exists, it bootstraps `~/.claude` too (see **Claude Code
+config** below).
 
 Prerequisites: `git`, and a GitHub SSH key (needed to clone private overlays; the
 public base alone works without one — a missing overlay just warns and is
@@ -105,6 +107,43 @@ Point git at the right key for the run:
 must already exist on the machine — copy it over before the first install.  To
 make it permanent, add a `github.com` block to `~/.ssh/config` with the matching
 `IdentityFile`.
+
+## Claude Code config (optional)
+
+The same base-plus-overlays idea extends to your Claude Code config in `~/.claude`
+(skills, agents, `CLAUDE.md`). It is **separate from the dotfiles repos** — much of
+`~/.claude` is runtime state that should not be versioned — but `install.sh` can
+bootstrap it in the same run, so one command sets up a whole machine.
+
+List your Claude repos in a second manifest (`~/.config/dotfiles/claude`, or
+`$DOTFILES_CLAUDE_MANIFEST`); `install.sh` scaffolds a commented template on first
+run. One entry per line, `name url [link]`:
+
+    # public base first, then private overlays (later entries layer on top)
+    claude-public    git@github.com:you/claude-public.git     bin/relink.sh
+    skills-personal  git@github.com:you/skills-personal.git    bin/relink.sh
+
+Each repo is cloned under `~/.claude/<name>` and its `link` script (default
+`bin/relink.sh`; `none` to clone only) symlinks its skills/agents **flat** into
+`~/.claude`. Missing/unreachable repos warn and are skipped, like overlays.
+
+### Public vs. private: repo boundary = trust boundary
+
+This is how genuinely-public skills coexist with work/personal ones **without risk
+of leaking the private ones**: split them by *repo*, not by a filter.
+
+- A **public base repo** holds only shareable skills/agents. It is authored public
+  and can be published as-is — you never derive it by stripping a private repo
+  (which is how secrets escape).
+- **Private overlay repo(s)** hold work/work and personal content and never
+  leave their private remotes.
+- The link step composes every repo flat into `~/.claude`, so at runtime the tiers
+  are one config; on disk they stay in separate repos with separate visibility.
+
+List the public base first and the private overlays after it — same ordering
+semantics as the dotfiles overlays. (Migrating an existing single private repo to
+this layout is just extracting its public-tier skills into the public repo; the
+bootstrap already supports any number of Claude repos.)
 
 ## Deployment model
 
