@@ -6,7 +6,10 @@
 # against this machine's hostname (e.g. *.example.com, or a|b alternation).  Lines
 # starting with # are ignored.  install.sh clones the base, selects the overlays
 # whose match applies here, lets you confirm their apply order, clones them, and
-# runs the base link.sh.  Idempotent.
+# runs the base link.sh.  Then, if a Claude-config manifest exists
+# ($DOTFILES_CLAUDE_MANIFEST, default ~/.config/dotfiles/claude), it applies the
+# same base+overlays idea to ~/.claude — cloning your Claude repos and running
+# each one's link step.  Idempotent.
 # Usage: install.sh [host-override]   (default: this machine's FQDN)
 #
 # Fresh machine (the script lives in the repo, so fetch it first; put your overlay
@@ -111,4 +114,57 @@ else
 fi
 
 bash "$PUB/link.sh"
+
+# --- Claude Code config from a private manifest ------------------------------
+# The same base+overlays idea as the dotfiles overlays above, applied to
+# ~/.claude: a LIST of repos, each cloned under $CLAUDE_HOME and linked into
+# ~/.claude by its own link step.  This is where the public/private split lives:
+# list a PUBLIC base repo first (genuinely shareable skills/agents), then PRIVATE
+# overlays (work/cerebras, personal) after it.  Each repo is its own trust
+# boundary -- the public repo is authored public, never filtered from a private
+# one -- and the link step composes them all flat into ~/.claude, so the tiers
+# coexist at runtime while living in separate repos.  The public dotfiles base
+# names none of them; your list lives in the manifest.  Optional: no manifest =>
+# this phase is skipped.
+CLAUDE_MANIFEST="${DOTFILES_CLAUDE_MANIFEST:-$HOME/.config/dotfiles/claude}"
+CLAUDE_HOME="${CLAUDE_HOME:-$HOME/.claude}"
+if [ ! -r "$CLAUDE_MANIFEST" ]; then
+  echo ">> no Claude-config manifest at $CLAUDE_MANIFEST — scaffolding a template."
+  mkdir -p "$(dirname "$CLAUDE_MANIFEST")"
+  cat > "$CLAUDE_MANIFEST" <<'EOF'
+# Claude Code config repos — read by install.sh (optional; delete to skip).
+# One entry per line:  name  url  [link]
+#   name   directory under ~/.claude to clone into
+#   url    git remote to clone/pull
+#   link   script (relative to the repo) run after fetch to symlink the repo
+#          into ~/.claude; default bin/relink.sh.  '-' or 'none' = clone only.
+# Lines starting with # are ignored.  List a PUBLIC base first, then PRIVATE
+# overlays — later entries layer on top.  Each repo is its own trust boundary
+# (the public one is safe to publish); the link step composes them flat into
+# ~/.claude, so public / work / personal skills coexist in separate repos.
+#
+# claude-public    git@github.com:you/claude-public.git    bin/relink.sh
+# skills-personal  git@github.com:you/skills-personal.git   bin/relink.sh
+EOF
+  echo "   edit it to add your Claude repos, then re-run install.sh — skipping for now."
+else
+  mkdir -p "$CLAUDE_HOME"
+  while read -r name url link _; do
+    case "$name" in ''|\#*) continue ;; esac
+    [ -n "$url" ] || { echo "   skip claude/$name (no URL)"; continue; }
+    get "$url" "$CLAUDE_HOME/$name"
+    [ -d "$CLAUDE_HOME/$name/.git" ] || continue
+    case "$link" in
+      ''|bin/relink.sh) link=bin/relink.sh ;;
+      -|none) echo "   claude/$name: cloned (no link step)"; continue ;;
+    esac
+    if [ -r "$CLAUDE_HOME/$name/$link" ]; then
+      echo ">> linking claude/$name ($link)"
+      ( cd "$CLAUDE_HOME/$name" && bash "$link" ) || echo "   warn: link step failed for $name" >&2
+    else
+      echo "   warn: claude/$name has no link step at $link — cloned only" >&2
+    fi
+  done < "$CLAUDE_MANIFEST"
+fi
+
 echo ">> done — open a new shell."
