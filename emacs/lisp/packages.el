@@ -3519,6 +3519,17 @@ subproject."
   :demand t
   :bind-keymap ("C-c g" . gaffer-command-map))
 
+(use-package gazette
+  ;; Weekly status report: assemble from Jira + GitHub, edit as org, render to
+  ;; Confluence/Markdown/Slack/plain, publish to Confluence.  Local :try-local
+  ;; checkout under ~/projects, like prevue/gaffer/quite; ghub is pulled from
+  ;; gazette's Package-Requires.  Work-specific settings (logins, Atlassian
+  ;; site/email, page ids, JQL) live in an overlay's
+  ;; `(with-eval-after-load 'gazette ...)'.  No MCP entrypoints, so deferred
+  ;; loading via the C-c z prefix is fine.
+  :ensure (:fetcher github :repo "greened/gazette" :try-local t)
+  :bind-keymap ("C-c z" . gazette-command-map))
+
 ;; Slack.  This is the generic, workspace-agnostic setup -- install, settings,
 ;; the README keybindings, and auto-start -- so Slack is usable regardless of
 ;; which overlays are active (work or personal).  Each workspace's
