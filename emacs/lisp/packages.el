@@ -1914,7 +1914,8 @@ Start `ielm' if it's not already running."
   :load-path (lambda () (list (expand-file-name "site-lisp/vendored" emacs-root)))
   :demand t)
 
-;; LLVM IR + TableGen modes (from llvm-project/llvm/utils/emacs/; no MELPA pkg).
+;; LLVM IR + TableGen + MLIR modes (vendored from llvm-project's
+;; llvm/utils/emacs/ and mlir/utils/emacs/; no MELPA pkg).
 (use-package llvm-mode
   :ensure nil
   :load-path (lambda () (list (expand-file-name "site-lisp/vendored" emacs-root)))
@@ -1924,6 +1925,11 @@ Start `ielm' if it's not already running."
   :ensure nil
   :load-path (lambda () (list (expand-file-name "site-lisp/vendored" emacs-root)))
   :mode ("\\.td\\'" . tablegen-mode))
+
+(use-package mlir-mode
+  :ensure nil
+  :load-path (lambda () (list (expand-file-name "site-lisp/vendored" emacs-root)))
+  :mode ("\\.mlir\\'" . mlir-mode))
 
 ;; (use-package rmsbolt
 ;;   :straight t)
