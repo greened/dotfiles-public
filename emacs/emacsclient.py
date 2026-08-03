@@ -7,13 +7,17 @@ import getpass
 import os
 from pathlib import Path
 import re
+import shutil
 import sys
 import socket
 import subprocess
 
 home = str(Path.home())
 
-emacsclient = '/usr/bin/emacsclient'
+# Discover the client on PATH rather than hard-coding a path: it lives at
+# /usr/bin/emacsclient on the VM but /opt/homebrew/bin/emacsclient on the Mac,
+# and this wrapper runs on whichever host invokes $EDITOR.
+emacsclient = shutil.which('emacsclient') or '/usr/bin/emacsclient'
 emacs_socket = f'{home}/.ssh/emacs-server'
 
 def ssh_running():
