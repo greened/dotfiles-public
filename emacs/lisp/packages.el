@@ -3500,6 +3500,45 @@ subproject."
   ;; `quite-define-project') under this prefix.
   (global-set-key (kbd "C-c q") quite-command-map))
 
+;; Central alias->person map.  ONE source of truth keyed by a short alias, each
+;; entry carrying display/group plus a per-service id sub-map (:ids).  Adding a
+;; service later is another key under :ids + one line in `my/project-people'.
+;; Real entries are work-specific -- set `my/people' in a private overlay (then
+;; call `my/project-people'), rather than committing colleague ids to the public
+;; base:
+;;
+;;   (setq my/people
+;;         '(("sasha" :display "Sasha Ivanov" :group "compiler"
+;;                    :ids ((github . "alice") (confluence . "557058:abc-123")))))
+;;   (my/project-people)
+(defvar my/people nil
+  "Alist of ALIAS -> (:display :group :ids ((SERVICE . ID)...)).
+The single source for per-person data; each package consumes a narrow
+projection built by `my/project-people'.")
+
+(defun my/project-people ()
+  "Refresh `prevue-people'/`gazette-people' from `my/people'.
+prevue (and gaffer, via prevue) wants alias->(:login :display :group) keyed on
+the GitHub id; gazette wants alias->(:display :confluence :group) keyed on the
+Confluence account id.  Idempotent -- safe to re-run after an overlay sets
+`my/people'."
+  (when (boundp 'prevue-people)
+    (setq prevue-people
+          (mapcar (lambda (p)
+                    (cons (car p)
+                          (list :login   (alist-get 'github (plist-get (cdr p) :ids))
+                                :display (plist-get (cdr p) :display)
+                                :group   (plist-get (cdr p) :group))))
+                  my/people)))
+  (when (boundp 'gazette-people)
+    (setq gazette-people
+          (mapcar (lambda (p)
+                    (cons (car p)
+                          (list :display    (plist-get (cdr p) :display)
+                                :confluence (alist-get 'confluence (plist-get (cdr p) :ids))
+                                :group      (plist-get (cdr p) :group))))
+                  my/people))))
+
 (use-package prevue
   ;; GitHub PR review queue and ediff/unified/panel review modes.  No :branch
   ;; (see quite above): a local :try-local checkout under ~/projects is used
@@ -3514,7 +3553,10 @@ subproject."
   ;; threads sidebar splits horizontally (below the review), not to the right;
   ;; drop needs-rereview PRs whose only new activity is discussion (empty diff)
   :custom ((prevue-threads-side 'below)
-           (prevue-drop-empty-rereview t)))
+           (prevue-drop-empty-rereview t))
+  ;; Project the central `my/people' map into prevue's reviewer-candidate view
+  ;; (also feeds gaffer's PR-open picker via the adapter).
+  :config (my/project-people))
 
 (use-package gaffer
   ;; Orchestrates PR/change work across prevue + a build/test backend +
@@ -3534,7 +3576,9 @@ subproject."
   ;; `(with-eval-after-load 'gazette ...)'.  No MCP entrypoints, so deferred
   ;; loading via the C-c z prefix is fine.
   :ensure (:fetcher github :repo "greened/gazette" :try-local t)
-  :bind-keymap ("C-c z" . gazette-command-map))
+  :bind-keymap ("C-c z" . gazette-command-map)
+  ;; Project the central `my/people' map into gazette's @alias->Confluence view.
+  :config (my/project-people))
 
 ;; Slack.  This is the generic, workspace-agnostic setup -- install, settings,
 ;; the README keybindings, and auto-start -- so Slack is usable regardless of
