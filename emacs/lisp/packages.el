@@ -3539,6 +3539,17 @@ Confluence account id.  Idempotent -- safe to re-run after an overlay sets
                                 :group      (plist-get (cdr p) :group))))
                   my/people))))
 
+;; Library for hosting MCP servers INSIDE this Emacs.  It backs the optional
+;; in-Emacs MCP adapters shipped with prevue/gaffer/gazette (prevue-mcp.el
+;; etc.), which register their tools against a running Emacs daemon reached
+;; through the forwarded ~/.ssh/emacs-server socket -- so an agent's tool call
+;; runs in-process where the package state lives, with no separate Python shim.
+;; Deferred: it is loaded on demand when an adapter's autoloaded
+;; `*-mcp-register' entry point (called by the stdio bridge) requires it.
+(use-package mcp-server-lib
+  :ensure (:host github :repo "laurynas-biveinis/mcp-server-lib.el")
+  :defer t)
+
 (use-package prevue
   ;; GitHub PR review queue and ediff/unified/panel review modes.  No :branch
   ;; (see quite above): a local :try-local checkout under ~/projects is used
