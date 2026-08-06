@@ -2824,6 +2824,57 @@ Start `ielm' if it's not already running."
 
   (global-set-key (kbd "C-<tab>") 'company-complete))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; AI completion (Copilot ghost text)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; Complements company+lsp above, it does not replace it: lsp/company is the
+;; always-on dropdown of REAL project symbols; Copilot is generative, multi-line
+;; ghost text predicting the next span.  Copilot's accept keys live in
+;; `copilot-completion-map', which is only live while a suggestion is on screen,
+;; so they don't clash globally, and the display predicate hides the ghost text
+;; whenever the company popup is up, so TAB is never ambiguous (C-<tab> stays
+;; `company-complete').
+;;
+;; One-time setup: Node >= 18 on PATH, then M-x copilot-install-server and
+;; M-x copilot-login (needs a GitHub Copilot subscription).
+;;
+;; TO MOVE COMPLETION TO A LOCAL MODEL LATER (hobby GPU box, no cloud/subscription):
+;; disable this block (so two completers don't run at once) and use minuet against
+;; a local Ollama server, which speaks the OpenAI FIM API:
+;;   (use-package minuet
+;;     :ensure t
+;;     ;; ghost text as you type, or bind minuet-complete-with-minibuffer for on-demand:
+;;     :hook (prog-mode . minuet-auto-suggestion-mode)
+;;     :bind (:map minuet-active-mode-map
+;;                 ("M-<return>" . minuet-accept-suggestion)
+;;                 ("M-e"        . minuet-accept-suggestion-line))
+;;     :config
+;;     (setq minuet-provider 'openai-fim-compatible)
+;;     (plist-put minuet-openai-fim-compatible-options :end-point
+;;                "http://<gpu-box>:11434/v1/completions")   ; the home Ollama box
+;;     (plist-put minuet-openai-fim-compatible-options :name "Ollama")
+;;     (plist-put minuet-openai-fim-compatible-options :api-key "TERM") ; Ollama ignores it
+;;     (plist-put minuet-openai-fim-compatible-options :model "qwen2.5-coder:7b"))
+;; minuet is provider-agnostic, so the same block can point at Claude instead
+;; (:provider 'claude, key via (llm-api-key "anthropic.com")).  Copilot is the
+;; better default until the local box is up: it is flat-rate and FIM-tuned,
+;; whereas a chat model billed per token on every keystroke-trigger gets costly.
+
+(use-package copilot
+  :ensure t
+  :hook (prog-mode . copilot-mode)
+  :bind (:map copilot-completion-map
+              ("<tab>"      . copilot-accept-completion)
+              ("TAB"        . copilot-accept-completion)
+              ("C-<return>" . copilot-accept-completion-by-word)
+              ("M-<return>" . copilot-accept-completion-by-line))
+  :config
+  ;; company owns TAB while its popup is open; hide Copilot's ghost text then so
+  ;; TAB accepts Copilot only when no company popup is showing.
+  (add-to-list 'copilot-disable-display-predicates
+               (lambda () (bound-and-true-p company-candidates))))
+
 ;; ;(require 'cedet)
 ;; ;(require 'cedet-global)
 ;; ;(require 'ede)
@@ -3348,6 +3399,9 @@ Start `ielm' if it's not already running."
   ("C-c G r" . gptel-rewrite)
   ("C-c G s" . my/gptel-model-switch)
   ("C-c G m" . gptel-menu)
+  ;; Conversational send from inside the chat buffer: C-<return> sends the
+  ;; prompt (like hitting Enter in the CLI), leaving RET for normal newlines.
+  (:map gptel-mode-map ("C-<return>" . gptel-send))
   :config
   (setq gptel-api-key (llm-api-key "openai.com"))
 
@@ -3368,6 +3422,14 @@ Start `ielm' if it's not already running."
          :stream t
          :models '("mistral-small")
          :key (llm-api-key "mistral.ai")))
+
+  ;; Anthropic / Claude.  The account + pass entry for "anthropic.com" lives in
+  ;; the private overlay alongside the other providers' `llm-api-key-accounts'.
+  (setq my/gptel-claude-backend
+        (gptel-make-anthropic
+         "Claude"
+         :key (llm-api-key "anthropic.com")
+         :stream t))
 
   ;; Additional models offered by `my/gptel-model-switch'.  Overlays add
   ;; their provider's model symbols here.
@@ -3402,6 +3464,15 @@ Start `ielm' if it's not already running."
                  ((string-prefix-p "gemini" selected) my/gptel-gemini-backend)
                  ((string-prefix-p "mistral" selected) my/gptel-mistral-backend)
                  (t gptel--openai))))))
+
+  ;; Wire Claude into the model-switch via the extension points above: the
+  ;; "claude" prefix routes to the Anthropic backend, and these model ids show
+  ;; up in the picker.  Update the ids as new Claude models ship.
+  (setq my/gptel-extra-models
+        (append my/gptel-extra-models
+                '(claude-sonnet-4-5-20250929 claude-opus-4-1-20250805)))
+  (add-to-list 'my/gptel-backend-alist
+               (cons "claude" my/gptel-claude-backend))
 
   ;; (setq gptel-model 'gemini-2.5-flash-preview-04-17)
   ;; (setq gptel-backend my/gptel-gemini-backend)
@@ -3450,9 +3521,12 @@ Start `ielm' if it's not already running."
   :bind
   (:repeat-map my-claude-code-map ("M" . claude-code-cycle-mode))
   :config
-  ;; optional IDE integration with Monet
-  ;;(add-hook 'claude-code-process-environment-functions #'monet-start-server-function)
-  ;;(monet-mode 1)
+  ;; Monet is the VS-Code-like MCP bridge for claude-code.el: it lets the CLI see
+  ;; this Emacs -- open files, current selection, xref/LSP, project -- and pushes
+  ;; its edits through ediff.  This is the same "IDE integration" as
+  ;; claude-code-ide.el, so we enable it here rather than adding that package.
+  (add-hook 'claude-code-process-environment-functions #'monet-start-server-function)
+  (monet-mode 1)
   (setq claude-code-terminal-backend 'claude)
   (vterm-code-mode))
 (use-package project
