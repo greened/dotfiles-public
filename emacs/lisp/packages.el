@@ -2258,19 +2258,59 @@ Start `ielm' if it's not already running."
 ;; lsp infrastructure
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-;; (use-package flycheck
-;;   :straight t
-;;   :ensure t
-;;   :init (global-flycheck-mode))
+(use-package lsp-mode
+  :ensure t
+  :commands (lsp lsp-deferred)
+  ;; Auto-start on C/C++ buffers.  Two clients cover the cases:
+  ;;   * remote monorepo files (TRAMP) -> the work overlay's
+  ;;     clangd-monorepo-remote client, which uses the shared remote index
+  ;;     (see dotfiles-overlays/work/emacs/work.el).
+  ;;   * everything else (local hobby projects) -> lsp's built-in clangd
+  ;;     client, which runs a local clangd and builds its OWN background index.
+  ;;     Give the project a compile_commands.json (cmake
+  ;;     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON, or `bear -- make') so clangd
+  ;;     indexes across files; `M-x lsp-install-server RET clangd' fetches a
+  ;;     clangd if none is on PATH.
+  ;; A local C/C++ file with no clangd/project just gets a harmless message.
+  :hook ((c-mode c++-mode c-ts-mode c++-ts-mode) . lsp-deferred)
+  :init
+  (setq lsp-keymap-prefix "C-c l")
+  :custom
+  ;; Remote (TRAMP) trees like the monorepo are huge: never inotify-watch them.
+  (lsp-enable-file-watchers nil)
+  ;; Use the built-in flymake backend so we don't need flycheck.
+  (lsp-diagnostics-provider :flymake)
+  (lsp-idle-delay 0.5)
+  (lsp-headerline-breadcrumb-enable nil))
 
-;; (use-package lsp-ui
-;;  :straight t
-;;  :commands lsp-ui-mode)
+(use-package lsp-ui
+  :ensure t
+  :commands lsp-ui-mode
+  :custom
+  ;; Off by default; toggle per-buffer with M-x lsp-ui-doc-mode / -sideline-mode.
+  (lsp-ui-doc-enable nil)
+  (lsp-ui-sideline-enable nil))
 
-;; (use-package lsp-treemacs
-;;  :straight t
-;;  :config
-;;  (lsp-treemacs-sync-mode 1))
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Tree-sitter
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; Emacs 30 ships the *-ts-mode major modes; treesit-auto installs the missing
+;; grammars and remaps the classic modes to them (c++-mode -> c++-ts-mode, and
+;; likewise for the other supported languages).  `treesit-auto-install':
+;;   'prompt  ask before compiling a grammar the first time (needs a C
+;;            compiler + network to github);
+;;   t        install silently;  nil  never auto-install.
+;; NOTE: *-ts-mode modes do NOT run cc-mode's `c-mode-common-hook', so the
+;; cc-mode tweaks in `my/c-mode-hook' won't apply under c++-ts-mode -- port
+;; those to `c-ts-mode-hook' / `c++-ts-mode-hook' if you want them there.
+;; To limit tree-sitter to just C/C++, set `treesit-auto-langs' to '(c cpp).
+(use-package treesit-auto
+  :ensure t
+  :custom
+  (treesit-auto-install 'prompt)
+  :config
+  (global-treesit-auto-mode))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Ivy infrastructure
