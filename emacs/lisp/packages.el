@@ -2672,7 +2672,6 @@ Start `ielm' if it's not already running."
                      #'consult-completion-in-region
                    #'completion--in-region)
                  args)))
-  (add-hook 'prog-mode-hook #'completion-preview-mode)
 
   ;; --------------------------------------------------------------------------
   ;; Global settings, consolidated here from the former basic.el / editor.el /
@@ -2917,6 +2916,27 @@ Start `ielm' if it's not already running."
   :ensure t
   :config
   (yasnippet-snippets-initialize))
+
+;; Surface snippet expansions in the corfu popup so they are never shadowed by
+;; TAB.  In plain buffers yasnippet-capf rides along as a global capf; in lsp
+;; buffers lsp's capf is exclusive and would hide snippets, so cape-capf-super
+;; merges yasnippet INTO it -- snippet and LSP candidates then share one popup.
+(use-package yasnippet-capf
+  :ensure t
+  :after (cape yasnippet)
+  :init
+  (add-to-list 'completion-at-point-functions #'yasnippet-capf t)
+  :config
+  (with-eval-after-load 'lsp-mode
+    (defun my/lsp-completion-merge-yasnippet ()
+      "Fold `yasnippet-capf' into lsp's exclusive capf via `cape-capf-super'."
+      (when (memq #'lsp-completion-at-point completion-at-point-functions)
+        (setq-local completion-at-point-functions
+                    (cons (cape-capf-super #'lsp-completion-at-point
+                                           #'yasnippet-capf)
+                          (remq #'lsp-completion-at-point
+                                completion-at-point-functions)))))
+    (add-hook 'lsp-completion-mode-hook #'my/lsp-completion-merge-yasnippet)))
 
 ;; (use-package company-lsp
 ;;   :requires company
