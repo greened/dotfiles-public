@@ -2280,6 +2280,8 @@ Start `ielm' if it's not already running."
   (lsp-enable-file-watchers nil)
   ;; Use the built-in flymake backend so we don't need flycheck.
   (lsp-diagnostics-provider :flymake)
+  ;; Don't let lsp-mode auto-wire company; corfu consumes lsp-completion-at-point.
+  (lsp-completion-provider :none)
   (lsp-idle-delay 0.5)
   (lsp-headerline-breadcrumb-enable nil))
 
@@ -2808,33 +2810,54 @@ Start `ielm' if it's not already running."
   (load-theme 'hober2 t))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Company
+;; In-buffer completion (Corfu + Cape)
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(use-package company
+;; Corfu is the in-buffer sibling of vertico: a popup driven purely by the
+;; native `completion-at-point-functions' + `completion-styles', so the same
+;; orderless matching used in the minibuffer applies here too.  It replaces
+;; company's separate backend protocol.  lsp-mode's `lsp-completion-at-point'
+;; feeds it (see `lsp-completion-provider' :none in the lsp-mode block); cape
+;; supplies the non-LSP capfs the old `company-backends' provided.
+(use-package corfu
   :ensure t
+  :custom
+  (corfu-cycle t)                       ; cycle through candidates
+  (corfu-auto t)                        ; pop up as you type
+  (corfu-auto-delay 0.3)                ; matches the old company-idle-delay
+  (corfu-auto-prefix 2)
+  (corfu-quit-no-match 'separator)
+  :init
+  (global-corfu-mode)
   :config
-  (setq company-idle-delay 0.3)
-  (setq company-backends
-        '(company-bbdb company-semantic company-cmake company-capf company-files
-                       (company-dabbrev-code company-gtags company-etags
-                                             company-keywords)
-                       company-oddmuse company-dabbrev))
-  (global-company-mode 1)
+  ;; Keep the muscle memory: C-<tab> triggers completion (was company-complete).
+  ;; When the popup is showing, TAB completes; when it is not, TAB still runs
+  ;; yas-expand as before.
+  (global-set-key (kbd "C-<tab>") #'completion-at-point))
 
-  (global-set-key (kbd "C-<tab>") 'company-complete))
+;; Cape supplies the capfs that stand in for the old `company-backends': dabbrev
+;; (was company-dabbrev/-dabbrev-code), file (company-files), and keyword
+;; (company-keywords).  The native capf -- including lsp -- is already on the
+;; list.  The niche company backends (bbdb, semantic, cmake, gtags, etags,
+;; oddmuse) are dropped; add their cape/capf equivalents if you miss one.
+(use-package cape
+  :ensure t
+  :init
+  (add-to-list 'completion-at-point-functions #'cape-dabbrev)
+  (add-to-list 'completion-at-point-functions #'cape-file)
+  (add-to-list 'completion-at-point-functions #'cape-keyword))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; AI completion (Copilot ghost text)
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-;; Complements company+lsp above, it does not replace it: lsp/company is the
+;; Complements corfu+lsp above, it does not replace it: lsp/corfu is the
 ;; always-on dropdown of REAL project symbols; Copilot is generative, multi-line
 ;; ghost text predicting the next span.  Copilot's accept keys live in
 ;; `copilot-completion-map', which is only live while a suggestion is on screen,
 ;; so they don't clash globally, and the display predicate hides the ghost text
-;; whenever the company popup is up, so TAB is never ambiguous (C-<tab> stays
-;; `company-complete').
+;; whenever the corfu popup is up, so TAB is never ambiguous (C-<tab> triggers
+;; `completion-at-point').
 ;;
 ;; One-time setup: Node >= 18 on PATH, then M-x copilot-install-server and
 ;; M-x copilot-login (needs a GitHub Copilot subscription).
@@ -2870,10 +2893,10 @@ Start `ielm' if it's not already running."
               ("C-<return>" . copilot-accept-completion-by-word)
               ("M-<return>" . copilot-accept-completion-by-line))
   :config
-  ;; company owns TAB while its popup is open; hide Copilot's ghost text then so
-  ;; TAB accepts Copilot only when no company popup is showing.
+  ;; corfu owns TAB while its popup is open; hide Copilot's ghost text then so
+  ;; TAB accepts Copilot only when no corfu popup is showing.
   (add-to-list 'copilot-disable-display-predicates
-               (lambda () (bound-and-true-p company-candidates))))
+               (lambda () (bound-and-true-p completion-in-region-mode))))
 
 ;; ;(require 'cedet)
 ;; ;(require 'cedet-global)
