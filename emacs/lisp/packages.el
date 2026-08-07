@@ -2276,6 +2276,12 @@ Start `ielm' if it's not already running."
   :init
   (setq lsp-keymap-prefix "C-c l")
   :custom
+  ;; Adopt the detected VC root without prompting.  Each monolith git worktree
+  ;; is its own root, so with the default (nil) lsp asks to import the root once
+  ;; per new worktree; the guess (project.el/vc -> the worktree's own toplevel)
+  ;; is exactly the root the monolith-remote clangd client uses for
+  ;; --project-root, so auto-adopting it is correct for both clangd clients.
+  (lsp-auto-guess-root t)
   ;; Remote (TRAMP) trees like the monolith are huge: never inotify-watch them.
   (lsp-enable-file-watchers nil)
   ;; Use the built-in flymake backend so we don't need flycheck.
