@@ -3773,7 +3773,7 @@ Confluence account id.  Idempotent -- safe to re-run after an overlay sets
          ("C-c S s" . slack-search-from-messages)
          ("C-c S J" . slack-jump-to-browser)
          ("C-c S j" . slack-jump-to-app)
-         ("C-c S e" . slack-insert-emoji)
+         ("C-c S e" . my/slack-insert-emoji)
          ("C-c S i" . my/slack-insert-emoji)
          ("C-c S E" . slack-message-edit)
          ("C-c S r" . slack-message-add-reaction)
@@ -3796,7 +3796,8 @@ Confluence account id.  Idempotent -- safe to re-run after an overlay sets
   :config
   ;; A fuller emoji inserter than the built-in `slack-insert-emoji', which only
   ;; offers a partial list.  Complete over ALL of `slack-emoji-all' (standard +
-  ;; this workspace's custom emoji).  Bound to `C-c S i' above.
+  ;; this workspace's custom emoji).  Bound to `C-c S e' and `C-c S i' above,
+  ;; replacing the built-in on `C-c S e' (still reachable via `M-x').
   (defun my/slack-insert-emoji (name)
     "Read an emoji NAME with completion and insert its `:NAME:' shortcode.
 Completes over every emoji in `slack-emoji-all' (the standard set plus this
