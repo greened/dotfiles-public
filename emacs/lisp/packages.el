@@ -3774,6 +3774,7 @@ Confluence account id.  Idempotent -- safe to re-run after an overlay sets
          ("C-c S J" . slack-jump-to-browser)
          ("C-c S j" . slack-jump-to-app)
          ("C-c S e" . slack-insert-emoji)
+         ("C-c S i" . my/slack-insert-emoji)
          ("C-c S E" . slack-message-edit)
          ("C-c S r" . slack-message-add-reaction)
          ("C-c S t" . slack-thread-show-or-create)
@@ -3793,6 +3794,20 @@ Confluence account id.  Idempotent -- safe to re-run after an overlay sets
          (:map slack-message-compose-buffer-mode-map
                ("C-c '" . slack-message-send-from-buffer)))
   :config
+  ;; A fuller emoji inserter than the built-in `slack-insert-emoji', which only
+  ;; offers a partial list.  Complete over ALL of `slack-emoji-all' (standard +
+  ;; this workspace's custom emoji).  Bound to `C-c S i' above.
+  (defun my/slack-insert-emoji (name)
+    "Read an emoji NAME with completion and insert its `:NAME:' shortcode.
+Completes over every emoji in `slack-emoji-all' (the standard set plus this
+workspace's custom emoji), so the full set is reachable, unlike the built-in
+`slack-insert-emoji'.  Inserts at point in the message being composed."
+    (interactive
+     (list (completing-read
+            "Emoji: "
+            (mapcar #'symbol-name (seq-filter #'symbolp slack-emoji-all))
+            nil t)))
+    (insert (if (string-suffix-p ":" name) name (concat name ":"))))
   ;; Teams are registered by overlays; start whatever is registered once init
   ;; settles.  Deferred via an idle timer so the token's gpg/pinentry can
   ;; display in a live UI rather than blocking init.
