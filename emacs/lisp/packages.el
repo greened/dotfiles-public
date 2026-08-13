@@ -2889,6 +2889,12 @@ Start `ielm' if it's not already running."
 ;; better default until the local box is up: it is flat-rate and FIM-tuned,
 ;; whereas a chat model billed per token on every keystroke-trigger gets costly.
 
+;; copilot needs track-changes >= 1.4, but Emacs 30 bundles only 1.2.  Pull the
+;; GNU ELPA release explicitly so Elpaca's build shadows the built-in and copilot
+;; below resolves its dependency.
+(use-package track-changes
+  :ensure t)
+
 (use-package copilot
   :ensure t
   :hook (prog-mode . copilot-mode)
