@@ -177,6 +177,34 @@ unread/mention counts.
 * Catch-up previews are best-effort: if a room's latest message hasn't been
   fetched into Emacs yet, the preview shows `(no preview)` — opening the room
   loads it.
+* **Repeat notifications are collapsed.** emacs-slack can notify you about one
+  message several times over. When it reconnects it opens a fresh websocket
+  without closing the one it replaces, and each leaked connection goes on
+  dispatching every event it receives, so the message is notified once per live
+  connection. Two leaked sockets means every message shows up three times. The
+  panel keeps a single row per message, matched on team, room, and the message
+  `ts`, so a repeat delivery adds no row and does not re-pop the panel or raise
+  the frame. Count your connections with:
+
+  ```elisp
+  (seq-count (lambda (p) (string-prefix-p "websocket to wss" (process-name p)))
+             (process-list))
+  ```
+
+  More than one per team means sockets have leaked. They are wasted work inside
+  emacs-slack even though the panel now ignores the duplicates, and
+  `slack-ws-close` will not clear them because it only closes the connection
+  emacs-slack still tracks. Evaluating this drops the leaked ones and keeps the
+  live one:
+
+  ```elisp
+  (dolist (p (process-list))
+    (when (and (string-prefix-p "websocket to wss" (process-name p))
+               (not (memq p (mapcar (lambda (team)
+                                      (websocket-conn (oref (oref team ws) conn)))
+                                    (hash-table-values slack-teams-by-token)))))
+      (delete-process p)))
+  ```
 * Possible enhancements (ask if you want them): land exactly on the mentioned
   message (not just the room), a dedicated "deferred" section, desktop-banner
   wording tuned per category.
