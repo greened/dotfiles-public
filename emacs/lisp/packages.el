@@ -44,6 +44,22 @@
                  (nnimap-split-fancy ,my-gnus-nnimap-split-fancy)
                  (nnimap-split-methods nnimap-split-fancy))))
 
+;; Build native modules (e.g. vterm) with Homebrew GCC rather than Apple clang.
+;; Set before Elpaca bootstraps so its builds inherit it, and use a full path
+;; because the GUI daemon does not get Homebrew on PATH (and Homebrew's `gcc'
+;; ships only versioned binaries -- no bare `gcc'/`cc' -- so PATH alone would
+;; still pick clang).  Auto-detect the newest gcc-NN so a Homebrew version bump
+;; does not re-break the build the way a hardcoded gcc-15 did.
+(when (eq system-type 'darwin)
+  (when-let* ((gccs (file-expand-wildcards "/opt/homebrew/bin/gcc-[0-9]*"))
+              (gcc (car (sort gccs
+                              (lambda (a b)
+                                (> (string-to-number (replace-regexp-in-string ".*/gcc-" "" a))
+                                   (string-to-number (replace-regexp-in-string ".*/gcc-" "" b))))))))
+    (setenv "CC" gcc)
+    (let ((gxx (replace-regexp-in-string "/gcc-" "/g++-" gcc)))
+      (when (file-executable-p gxx) (setenv "CXX" gxx)))))
+
 ;; elpaca package management
 (defvar elpaca-installer-version 0.7)
 (defvar elpaca-directory (expand-file-name "elpaca/" user-emacs-directory))
