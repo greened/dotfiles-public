@@ -43,6 +43,9 @@
 ;;       C              clear everything (asks first)
 ;;   * The pending list is saved to `slack-attention-file' on exit and reloaded
 ;;     next session (best-effort: jump-back works once Slack is reconnected).
+;;   * One message gets one item, however many times emacs-slack notifies you
+;;     about it.  `slack-attention-prune-stale-sockets' closes the leftover
+;;     connections behind those repeat notifications.
 ;;
 ;; Setup (from your private init, after emacs-slack is configured):
 ;;
@@ -189,7 +192,8 @@ on top of whatever emacs-slack already notifies."
     (and id (string-match-p (regexp-quote (format "<@%s>" id)) text))))
 
 (defun slack-attention--dm-muted-p (room team)
-  "Non-nil if ROOM is a DM whose partner matches `slack-attention-muted-dm-senders'."
+  "Non-nil if ROOM is a DM whose partner is muted.
+The DM's name is matched against `slack-attention-muted-dm-senders'."
   (and (ignore-errors (slack-im-p room))
        (let ((nm (downcase (or (slack-attention--room-name room team) ""))))
          (seq-some (lambda (s) (string-match-p (regexp-quote (downcase s)) nm))
@@ -516,6 +520,63 @@ kept, since you cannot jump to them yet."
   (ignore-errors (advice-remove 'slack-message-notify-alert #'slack-attention--notify-gate))
   (ignore-errors (advice-remove 'slack-message-notify-p #'slack-attention-notify-policy))
   (remove-hook 'kill-emacs-hook #'slack-attention-save))
+
+;;; Leftover websockets -------------------------------------------------------
+;; emacs-slack opens a websocket without closing the one it replaces, so a
+;; reconnect can leave a live connection behind that it no longer tracks.  Each
+;; leftover goes on dispatching every event it receives, which is what notifies
+;; you about one message several times over.  The panel absorbs that (see
+;; `slack-attention--find-by-ts'), and this drops the leftovers so emacs-slack
+;; stops doing the same work once per connection.
+
+(defun slack-attention--slack-socket-p (process)
+  "Non-nil if PROCESS is a websocket connection to Slack.
+The host has to match too, so websockets belonging to other packages are left
+alone."
+  (let ((name (process-name process)))
+    (and (string-prefix-p "websocket to " name)
+         (string-match-p "slack\\.com" name))))
+
+(defun slack-attention--tracked-sockets ()
+  "Processes of the websockets emacs-slack tracks, at most one per team.
+Anything else connected to Slack is a leftover."
+  (delq nil
+        (mapcar (lambda (team)
+                  (ignore-errors
+                    (websocket-conn (slot-value (slot-value team 'ws) 'conn))))
+                (slack-attention--teams))))
+
+;;;###autoload
+(defun slack-attention-prune-stale-sockets ()
+  "Close the Slack websockets emacs-slack no longer tracks.
+Keeps each team's tracked connection and closes the rest.  Run it when one
+message is being notified several times over, or after a spell of flaky network.
+`slack-ws-close' is no help here, because it only closes the connection still in
+the team's `ws' slot.
+
+Does nothing when no tracked connection can be found, since then every Slack
+socket would look like a leftover.  Closing a connection also clears the team's
+`connected' flag, which every connection shares, so this sets the flag back for
+any team still connected.  Without that repair `slack-team-connect' would treat
+the team as disconnected and call `slack-start', opening the kind of duplicate
+connection this just cleaned up."
+  (interactive)
+  (let ((tracked (slack-attention--tracked-sockets)))
+    (if (null tracked)
+        (message "slack-attention: no tracked Slack connection, nothing pruned")
+      (let ((pruned 0))
+        (dolist (p (process-list))
+          (when (and (slack-attention--slack-socket-p p)
+                     (not (memq p tracked)))
+            (ignore-errors (delete-process p))
+            (setq pruned (1+ pruned))))
+        (dolist (team (slack-attention--teams))
+          (ignore-errors
+            (let ((ws (slot-value team 'ws)))
+              (when (websocket-openp (slot-value ws 'conn))
+                (setf (slot-value ws 'connected) t)))))
+        (message "slack-attention: pruned %d leftover connection%s, %d live"
+                 pruned (if (= pruned 1) "" "s") (length tracked))))))
 
 ;;; Catch-up buffer -----------------------------------------------------------
 ;; A single buffer listing every room with unread messages (DMs, group DMs,

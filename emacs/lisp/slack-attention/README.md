@@ -192,19 +192,11 @@ unread/mention counts.
   ```
 
   More than one per team means sockets have leaked. They are wasted work inside
-  emacs-slack even though the panel now ignores the duplicates, and
-  `slack-ws-close` will not clear them because it only closes the connection
-  emacs-slack still tracks. Evaluating this drops the leaked ones and keeps the
-  live one:
-
-  ```elisp
-  (dolist (p (process-list))
-    (when (and (string-prefix-p "websocket to wss" (process-name p))
-               (not (memq p (mapcar (lambda (team)
-                                      (websocket-conn (oref (oref team ws) conn)))
-                                    (hash-table-values slack-teams-by-token)))))
-      (delete-process p)))
-  ```
+  emacs-slack even though the panel now ignores the duplicates, so clear them
+  with `M-x slack-attention-prune-stale-sockets`, which keeps each team's
+  tracked connection and closes the leftovers. `slack-ws-close` will not do
+  this, because it only closes the connection emacs-slack still tracks, which
+  is the one you want to keep.
 * Possible enhancements (ask if you want them): land exactly on the mentioned
   message (not just the room), a dedicated "deferred" section, desktop-banner
   wording tuned per category.
