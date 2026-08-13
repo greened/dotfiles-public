@@ -230,24 +230,47 @@ separate :after capture runs even when a :before-while gate blocks the banner."
 
 ;;; Capture -------------------------------------------------------------------
 
+(defun slack-attention--find-by-ts (team-name room-name ts)
+  "Return the pending item for TS in ROOM-NAME on TEAM-NAME, or nil.
+One Slack message can be notified more than once.  A reconnect in emacs-slack
+opens a fresh websocket without closing the one it replaces, so each leaked
+connection keeps dispatching every event it receives, and the message is
+notified once per live connection.  TS is the message's identity, which is what
+distinguishes a repeat delivery of one message from two messages that happen to
+read alike."
+  (and ts
+       (seq-find (lambda (it)
+                   (and (equal ts (plist-get it :ts))
+                        (equal room-name (plist-get it :room-name))
+                        (equal team-name (plist-get it :team-name))))
+                 slack-attention--items)))
+
 (defun slack-attention--add (message room team)
-  "Capture a notified MESSAGE in ROOM/TEAM into the attention list."
+  "Capture a notified MESSAGE in ROOM/TEAM into the attention list.
+A message that is already pending is not captured again, so a repeat delivery
+adds no row and does not re-pop the panel or raise the frame.  See
+`slack-attention--find-by-ts', which also covers why one message can be
+notified repeatedly.  A message with no readable ts cannot be identified, so it
+is always captured."
   (condition-case err
       (let* ((team-name (slack-attention--team-name team))
              (room-name (slack-attention--room-name room team))
-             (text (slack-attention--message-text message team))
-             (item (list :id (cl-incf slack-attention--counter)
-                         :message message :room room :team team
-                         :team-name team-name :room-name room-name
-                         :ts (ignore-errors (slot-value message 'ts))
-                         :text (if (string-empty-p text) "(no text)" text)
-                         :time (float-time)
-                         :snooze nil)))
-        (setq slack-attention--items (append slack-attention--items (list item)))
-        (slack-attention--refresh-buffer)
-        (when slack-attention-auto-pop (slack-attention--display))
-        (when slack-attention-raise-frame
-          (ignore-errors (raise-frame))))
+             (ts (ignore-errors (slot-value message 'ts)))
+             (text (slack-attention--message-text message team)))
+        (unless (slack-attention--find-by-ts team-name room-name ts)
+          (let ((item (list :id (cl-incf slack-attention--counter)
+                            :message message :room room :team team
+                            :team-name team-name :room-name room-name
+                            :ts ts
+                            :text (if (string-empty-p text) "(no text)" text)
+                            :time (float-time)
+                            :snooze nil)))
+            (setq slack-attention--items
+                  (append slack-attention--items (list item)))
+            (slack-attention--refresh-buffer)
+            (when slack-attention-auto-pop (slack-attention--display))
+            (when slack-attention-raise-frame
+              (ignore-errors (raise-frame))))))
     ;; Never let a bug here break emacs-slack's own notification flow.
     (error (message "slack-attention capture error: %S" err))))
 
@@ -437,6 +460,10 @@ kept, since you cannot jump to them yet."
                     (list :id (plist-get it :id)
                           :team-name (plist-get it :team-name)
                           :room-name (plist-get it :room-name)
+                          ;; A string, so it survives the round trip, and it
+                          ;; keeps the duplicate check working on items that
+                          ;; came back from a previous session.
+                          :ts (plist-get it :ts)
                           :text (plist-get it :text)
                           :time (plist-get it :time)
                           :snooze (plist-get it :snooze)))
