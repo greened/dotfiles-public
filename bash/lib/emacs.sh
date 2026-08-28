@@ -59,13 +59,9 @@ function setup_emacs {
     PS1=$PS1'\[$(vterm_prompt_end)\]'
     #fi
 
-    export remote_emacs_auth="$HOME/.emacs.d/remote-server"
     # EDITOR: emacsclient.py wrapper (dispatches on SSH_CLIENT); no -n so it blocks.
     export EDITOR="$HOME/lib/dotfiles/emacs/emacsclient.py"
     export VISUAL="$EDITOR"
-
-    export EMACS_SERVER_SOCK="${HOME}/emacs.d/server/server"
-    #alias ssh="ssh -R ~/.ssh/emacs-server:$EMACS_SERVER_SOCK"
 
 # Track directory, username, and cwd for remote logons.
 #if [ "$TERM" = "eterm-color" -o "$TERM" = "screen" ]; then
