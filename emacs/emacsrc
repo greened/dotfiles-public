@@ -25,10 +25,11 @@
 			(concat emacs-root p)))
 (add-path "/lisp") ;; all my personal elisp code
 (add-path "/lisp/term") ;; terminal stuff
-;; NOTE: local-but-shareable packages (e.g. lisp/slack-attention) are NOT put on
+;; NOTE: local-but-shareable packages (e.g. lisp/term-launcher) are NOT put on
 ;; the global load-path here.  Each is loaded from its own `use-package' block
 ;; via `:load-path', so it behaves exactly like a fetched package and extracting
 ;; it later to its own repo is a one-line `:ensure' recipe swap.
+;; (lisp/slack-attention was extracted that way; it is greened/slack-attention.)
   ;;(add-path "/lisp/themes") ;; color themes
   ;(add-path "/site-lisp") ;; elisp stuff I find on the 'net
   ;(add-path "/site-lisp/doremi") ;; doremi config tool
