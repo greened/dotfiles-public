@@ -149,7 +149,7 @@ policy."
   :group 'agenda-feeds)
 
 (defconst agenda-feeds--issue-re "\\b\\([A-Z][A-Z0-9]+-[0-9]+\\)\\b"
-  "Regexp matching an issue key such as acme-1234 in an item title.")
+  "Regexp matching an issue key (capitals, hyphen, digits) in an item title.")
 
 (defun agenda-feeds-file (name)
   "Absolute path of feed file NAME under `agenda-feeds-directory'.
@@ -245,7 +245,7 @@ read first."
 
 (defun agenda-feeds--issue-tag (key)
   "KEY as an org tag.
-Org tags cannot contain a hyphen, so acme-1234 becomes acme_1234."
+Org tags cannot contain a hyphen, so a key's hyphen becomes an underscore."
   (replace-regexp-in-string "-" "_" key))
 
 ;;;###autoload
