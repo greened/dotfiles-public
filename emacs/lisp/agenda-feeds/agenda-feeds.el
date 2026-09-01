@@ -103,6 +103,36 @@ one-line comment items.  Those belong in the review queue, not the agenda.
   :type '(repeat symbol)
   :group 'agenda-feeds)
 
+;; gazette owns the Atlassian credential and the REST call, so the Jira feed
+;; borrows its client rather than growing a second one.  Guarded like gaffer.
+(declare-function gazette--jira-search "gazette")
+
+(defvar agenda-feeds-alist
+  '((work-items :file "work-items.org" :generator agenda-feeds-work-items)
+    (jira       :file "jira.org"       :generator agenda-feeds-jira))
+  "Feeds `agenda-feeds-refresh' visits, in order.
+Each entry is (NAME :file BASENAME :generator FUNCTION).  A generator whose
+function is not `fboundp' is skipped, so a feed whose source package is absent
+costs nothing.")
+
+(defcustom agenda-feeds-max-ages
+  '((work-items . 0)
+    (jira . 600))
+  "Seconds each feed's file stays fresh, by feed name.  0 refreshes every time.
+This is what lets one key both open the agenda and keep it current without
+re-fetching on every press.  A feed built from local state costs nothing and
+wants 0; a feed that makes a network round trip wants a bound, so opening the
+agenda twice in a minute does not pay for it twice.  A feed with no entry here
+is treated as 0."
+  :type '(alist :key-type symbol :value-type integer)
+  :group 'agenda-feeds)
+
+(defcustom agenda-feeds-jira-jql
+  "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC"
+  "JQL selecting the issues the Jira feed lists."
+  :type 'string
+  :group 'agenda-feeds)
+
 (defcustom agenda-feeds-todo-keyword "TODO"
   "The org TODO keyword generated entries are given.
 Must be a keyword in `org-todo-keywords', or the entries render as plain
@@ -165,10 +195,7 @@ point of use rather than writing somewhere surprising."
      ;; The issue key becomes a tag as well as staying in the heading, so
      ;; `org-agenda' can filter a whole stack of branches by issue.
      "** " agenda-feeds-todo-keyword " " title
-     ;; Org tags cannot contain a hyphen, so acme-1234 tags as acme_1234.
-     (if key
-         (format "   :%s:" (replace-regexp-in-string "-" "_" key))
-       "")
+     (if key (format "   :%s:" (agenda-feeds--issue-tag key)) "")
      "\n"
      "   :PROPERTIES:\n"
      (format "   :REPO:     %s\n" (or repo "?"))
@@ -210,16 +237,88 @@ read first."
       (message "agenda-feeds: %d work item(s) -> %s" (length sorted) file))
     file))
 
+(defun agenda-feeds--issue-tag (key)
+  "KEY as an org tag.
+Org tags cannot contain a hyphen, so acme-1234 becomes acme_1234."
+  (replace-regexp-in-string "-" "_" key))
+
 ;;;###autoload
-(defun agenda-feeds-refresh ()
-  "Rewrite every feed whose source is available."
+(defun agenda-feeds-jira ()
+  "Write the Jira feed from `agenda-feeds-jira-jql', and return its file name.
+Borrows gazette's Atlassian client, so it needs no credential of its own.  This
+makes a synchronous network call: it is meant to run when you ask for the
+agenda, never from a timer."
   (interactive)
-  (let ((written 0))
-    (dolist (feed '(agenda-feeds-work-items))
-      (when (ignore-errors (funcall feed) t) (setq written (1+ written))))
+  (let ((file (agenda-feeds-file "jira.org"))
+        (issues (and (fboundp 'gazette--jira-search)
+                     (gazette--jira-search agenda-feeds-jira-jql))))
+    (make-directory (file-name-directory file) t)
+    (with-temp-file file
+      (insert (agenda-feeds--banner "Jira"))
+      (insert "* Assigned issues\n")
+      (if issues
+          (dolist (is issues)
+            (let ((key (plist-get is :key)))
+              (insert
+               ;; A link, so C-c C-o from the agenda opens the issue.
+               (format "** %s [[%s][%s]] %s   :%s:\n"
+                       agenda-feeds-todo-keyword
+                       (plist-get is :url) key
+                       (agenda-feeds--org-escape (plist-get is :summary))
+                       (agenda-feeds--issue-tag key))
+               "   :PROPERTIES:\n"
+               (format "   :ISSUE:   %s\n" key)
+               (format "   :STATUS:  %s\n" (or (plist-get is :status) "?"))
+               (format "   :UPDATED: %s\n" (or (plist-get is :updated) "?"))
+               "   :END:\n")))
+        (insert (if (fboundp 'gazette--jira-search)
+                    "** No assigned issues\n"
+                  "** Jira feed unavailable (gazette not loaded)\n"))))
     (when (called-interactively-p 'interactive)
-      (message "agenda-feeds: refreshed %d feed(s)" written))
-    written))
+      (message "agenda-feeds: %d Jira issue(s) -> %s" (length issues) file))
+    file))
+
+(defun agenda-feeds--stale-p (name file)
+  "Non-nil if FILE should be regenerated for feed NAME.
+Missing counts as stale, and a max age of 0 or less means always."
+  (let ((max-age (or (alist-get name agenda-feeds-max-ages) 0)))
+    (or (not (file-exists-p file))
+        (<= max-age 0)
+        (> (float-time
+            (time-since (file-attribute-modification-time
+                         (file-attributes file))))
+           max-age))))
+
+;;;###autoload
+(defun agenda-feeds-refresh (&optional force)
+  "Regenerate each stale feed in `agenda-feeds-alist'.
+With FORCE (a prefix argument), regenerate every feed regardless of age.
+
+A generator that fails is reported and skipped, leaving its previous file in
+place: an agenda showing yesterday's Jira is far better than one that lost it."
+  (interactive "P")
+  (let ((written 0) (fresh 0) (skipped 0) (failed 0))
+    (dolist (entry agenda-feeds-alist)
+      (let* ((name (car entry))
+             (spec (cdr entry))
+             (generator (plist-get spec :generator))
+             (file (agenda-feeds-file (plist-get spec :file))))
+        (cond
+         ((not (fboundp generator)) (setq skipped (1+ skipped)))
+         ((and (not force) (not (agenda-feeds--stale-p name file)))
+          (setq fresh (1+ fresh)))
+         (t
+          (condition-case err
+              (progn (funcall generator) (setq written (1+ written)))
+            (error
+             (setq failed (1+ failed))
+             (message "agenda-feeds: %s failed, keeping previous file: %s"
+                      name (error-message-string err))))))))
+    (when (called-interactively-p 'interactive)
+      (message
+       "agenda-feeds: %d written, %d still fresh, %d unavailable, %d failed"
+       written fresh skipped failed))
+    (list :written written :fresh fresh :skipped skipped :failed failed)))
 
 (provide 'agenda-feeds)
 ;;; agenda-feeds.el ends here

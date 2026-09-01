@@ -686,7 +686,10 @@ PRIORITY may be one of the characters ?A, ?B, or ?C."
   ;; `org-agenda-files' and `org-agenda-custom-commands' belong to org, which
   ;; loads lazily, so touch them only once it is up.
   (with-eval-after-load 'org
-    (add-to-list 'org-agenda-files (agenda-feeds-file "work-items.org") t)
+    (dolist (entry agenda-feeds-alist)
+      (add-to-list 'org-agenda-files
+                   (agenda-feeds-file (plist-get (cdr entry) :file))
+                   t))
     ;; Selecting by the feeds' `generated' filetag rather than by file name
     ;; keeps this static: every future feed joins the block automatically.
     (add-to-list 'org-agenda-custom-commands
