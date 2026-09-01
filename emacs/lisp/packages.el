@@ -672,6 +672,42 @@ PRIORITY may be one of the characters ?A, ?B, or ?C."
     ;; present.
     (setq org-capture-templates nil)))
 
+;; Generated agenda feeds: each source of work becomes an org file the agenda
+;; reads, so "what am I working on today?" is one view rather than several tools.
+(use-package agenda-feeds
+  :ensure nil
+  :load-path (lambda () (list (expand-file-name "lisp/agenda-feeds" emacs-root)))
+  :demand t
+  :init
+  ;; Deliberately NOT a notes directory.  A refresh rewrites each feed file
+  ;; whole, so they must not share a directory with anything hand-written.
+  (setq agenda-feeds-directory "~/lib/agenda-feeds")
+  :config
+  ;; `org-agenda-files' and `org-agenda-custom-commands' belong to org, which
+  ;; loads lazily, so touch them only once it is up.
+  (with-eval-after-load 'org
+    (add-to-list 'org-agenda-files (agenda-feeds-file "work-items.org") t)
+    ;; Selecting by the feeds' `generated' filetag rather than by file name
+    ;; keeps this static: every future feed joins the block automatically.
+    (add-to-list 'org-agenda-custom-commands
+                 '("d" "What am I working on today?"
+                   ((agenda "" ((org-agenda-span 1)
+                                (org-agenda-overriding-header "Today")))
+                    (tags-todo "generated"
+                               ((org-agenda-overriding-header
+                                 "Work in flight")))))
+                 t)))
+
+(defun my/work-today ()
+  "Refresh the generated agenda feeds, then show the day view.
+Refreshing first is what makes the view trustworthy: the feeds are plain files,
+and a stale one looks exactly like an accurate one."
+  (interactive)
+  (when (fboundp 'agenda-feeds-refresh) (agenda-feeds-refresh))
+  (org-agenda nil "d"))
+
+(define-key my/org-command-map (kbd "t") #'my/work-today)
+
 (use-package exec-path-from-shell
   :ensure t
   :config
