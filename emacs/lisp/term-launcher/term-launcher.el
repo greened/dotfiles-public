@@ -1,4 +1,4 @@
-;;; term-launcher.el --- Launch terminals to remote hosts with a hydra picker -*- lexical-binding: t; -*-
+;;; term-launcher.el --- Launch terminals to remote hosts from a C-c t prefix -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 David Greene
 
@@ -7,7 +7,7 @@
 ;; Version: 0.1.0
 ;; Keywords: terminals, unix, tools
 ;; URL: https://github.com/USER/term-launcher
-;; Package-Requires: ((emacs "27.1") (vterm "0") (hydra "0") (bind-key "0") (tramp-term "0") (vterm-reconnect "0"))
+;; Package-Requires: ((emacs "27.1") (vterm "0") (tramp-term "0") (vterm-reconnect "0"))
 
 ;; This file is not part of GNU Emacs.
 
@@ -26,14 +26,15 @@
 
 ;;; Commentary:
 ;;
-;; Launch shells on the local host and on remote hosts over ssh -- in either
-;; `vterm' or `ansi-term' -- and pick a target from a Hydra.
+;; Launch shells on the local host and on remote hosts over ssh, in either
+;; `vterm' or `ansi-term', from a `C-c t' prefix.
 ;;
 ;; Register targets in `term-launcher-machine-alist' as (HOST KEY) pairs.  Each
-;; gets a `C-c <KEY>' binding (a vterm ssh session, or a local vterm for
-;; "localhost") and an entry in the `C-c t' hydra.  For each non-localhost HOST,
-;; `term-launcher-defterm' also defines `term-launcher-vterm-HOST',
-;; `term-launcher-ansi-HOST', and `term-launcher-open-HOST' commands.
+;; gets a `C-c t <KEY>' binding: a vterm ssh session, or a local vterm for
+;; "localhost".  With `which-key' enabled, `C-c t' then a pause lists them.  For
+;; each non-localhost HOST, `term-launcher-defterm' also defines
+;; `term-launcher-vterm-HOST', `term-launcher-ansi-HOST', and
+;; `term-launcher-open-HOST' commands.
 ;;
 ;;   (require 'term-launcher)
 ;;   (add-to-list 'term-launcher-machine-alist '("work-host" "w"))
@@ -46,12 +47,8 @@
 
 ;;; Code:
 
+(require 'term)             ; ansi-term, term-mode, term-char-mode
 (require 'vterm-reconnect)
-(require 'bind-key)
-;; NOTE: `hydra' is required lazily (in `term-launcher-hydra-menu', bound to
-;; C-c t) rather than here.  hydra is an elpaca (:ensure t) package loaded
-;; asynchronously at after-init, so a top-level (require 'hydra) fails while this
-;; package :demand-loads mid-init -- which aborts the whole config load.
 
 (declare-function vterm "vterm" (&optional buffer-name))
 (declare-function tramp-term "tramp-term" (&optional host))
@@ -85,7 +82,8 @@ When nil, the bare host name is used."
   (vterm))
 
 (defun term-launcher-remote-term (new-buffer-name cmd &rest switches)
-  "Open an `ansi-term' running CMD with SWITCHES in a buffer named NEW-BUFFER-NAME."
+  "Open an `ansi-term' running CMD with SWITCHES.
+The buffer is named NEW-BUFFER-NAME."
   (let ((name (generate-new-buffer-name (concat "*" new-buffer-name "*"))))
     (setq name (apply #'make-term name cmd nil switches))
     (set-buffer name)
@@ -118,65 +116,56 @@ When nil, the bare host name is used."
              (interactive)
              (,(intern (format "term-launcher-vterm-%s" host)))))))
 
-(defun term-launcher--generate-hydra-heads (name machine-alist)
-  "Build Hydra heads (labelled NAME) from MACHINE-ALIST."
-  (let ((result '()))
-    (dolist (item machine-alist result)
-      (let* ((machine (nth 0 item))
-             (key (nth 1 item))
-             (column (format "%s" name)))
-        ;; Hydra head: (KEY FUNC DESC :column COLUMN)
-        (setq result (append result
-                             `((,key
-                                ,(key-binding (kbd (concat "C-c " key)))
-                                ,machine
-                                :column ,column))))))))
+;; A prefix key IS a key whose binding is a keymap, so this one map is what
+;; makes `C-c t' a prefix; no minor mode is needed to own it.  Targets live
+;; under the prefix (`C-c t l') rather than at top level (`C-c l'), which is
+;; what keeps them clear of the crowded global `C-c <letter>' space -- org
+;; claims `C-c l' for `org-store-link' from its deferred :config, so a
+;; top-level binding here lost the moment an org file was opened.
+;;
+;; `defvar', so reloading this file leaves an existing map (and anything the
+;; user added to it) in place; `term-launcher-bind-keys' then defines onto the
+;; live map.
+(defvar term-launcher-command-map (make-sparse-keymap "term-launcher")
+  "Keymap for terminal targets, bound to the `C-c t' prefix.
+Each target in `term-launcher-machine-alist' gets its KEY here.")
 
-(defun term-launcher--rebuild-hydra (machine-alist)
-  "(Re)build the `C-c t' hydra from MACHINE-ALIST.
-Run after the keys are bound so each head picks up its `C-c <key>' binding."
-  (eval `(defhydra term-launcher-hydra (:color blue :hint nil)
-           ,@(term-launcher--generate-hydra-heads "vterm" machine-alist))))
+(defun term-launcher--target-command (host)
+  "The command symbol opening a vterm on HOST.
+`term-launcher-defterm' defines these for remote hosts; localhost has its own."
+  (if (string= host "localhost")
+      #'term-launcher-vterm-localhost
+    (intern (format "term-launcher-vterm-%s" host))))
 
 ;;;###autoload
 (defun term-launcher-bind-keys (machine-alist)
-  "Bind `C-c <KEY>' for each target in MACHINE-ALIST, and rebuild the hydra.
-Also syncs the `vterm-reconnect' default host to the first non-localhost target."
+  "Bind each target in MACHINE-ALIST to its KEY in `term-launcher-command-map'.
+Also syncs the `vterm-reconnect' default host to the first non-localhost target.
+
+Binds the target's named command directly.  It deliberately does NOT look the
+command up from a global binding: doing that let an unrelated package that had
+taken the same `C-c <key>' silently become the target's command."
   (dolist (item machine-alist)
-    (let* ((name (nth 0 item))
-           (key (nth 1 item)))
-      (bind-key (concat "C-c " key)
-                (cond
-                 ((string= name "localhost")
-                  (lambda () (interactive) (term-launcher-vterm-localhost)))
-                 (t
-                  (lambda () (interactive)
-                    (funcall (intern (format "term-launcher-vterm-%s" name)))))))))
-  ;; The C-c t hydra is (re)built lazily on first use (see
-  ;; `term-launcher-hydra-menu'), so it always reflects the current alist and
-  ;; nothing here depends on hydra being loaded.
+    (let ((host (nth 0 item))
+          (key (nth 1 item)))
+      (define-key term-launcher-command-map (kbd key)
+                  (term-launcher--target-command host))))
   (term-launcher--sync-reconnect-host))
 
-;; Define per-host commands + bind keys for the default targets, and bind the
-;; `C-c t' hydra.  Overlays add targets and re-run `term-launcher-defterm' /
-;; `term-launcher-bind-keys' via `(with-eval-after-load 'term-launcher ...)'.
+;; Define per-host commands + bind keys for the default targets.  Overlays add
+;; targets and re-run `term-launcher-defterm' / `term-launcher-bind-keys' via
+;; `(with-eval-after-load 'term-launcher ...)'.
 (dolist (host-pair term-launcher-machine-alist)
   (let ((host (nth 0 host-pair)))
     (unless (string= host "localhost")
       (term-launcher-defterm host))))
 
-;; C-c t builds the hydra on first use (lazily requiring `hydra'), so nothing at
-;; load time depends on hydra being available.
-(defun term-launcher-hydra-menu ()
-  "Open the terminal picker, (re)building it from `term-launcher-machine-alist'."
-  (interactive)
-  (require 'hydra)
-  (term-launcher--rebuild-hydra term-launcher-machine-alist)
-  (term-launcher-hydra/body))
-
 (term-launcher-bind-keys term-launcher-machine-alist)
 
-(define-key (current-global-map) (kbd "C-c t") #'term-launcher-hydra-menu)
+;; Binding the map itself is what makes `C-c t' a prefix.  With `which-key' on,
+;; `C-c t' then a pause lists the targets by command name, which is what the
+;; picker menu used to be for.
+(define-key (current-global-map) (kbd "C-c t") term-launcher-command-map)
 
 (provide 'term-launcher)
 ;;; term-launcher.el ends here
