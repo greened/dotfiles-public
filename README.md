@@ -127,6 +127,12 @@ Each repo is cloned under `~/.claude/<name>` and its `link` script (default
 `bin/relink.sh`; `none` to clone only) symlinks its skills/agents **flat** into
 `~/.claude`. Missing/unreachable repos warn and are skipped, like overlays.
 
+Name the link script deliberately rather than taking the default: a repo may ship
+a wider setup step than `relink.sh`, and pointing at the narrow one silently
+installs only part of it. Whatever it does, expect a repo's *per-machine* state
+to need a second run once that state exists — a step that wires anything up per
+project can do nothing on a machine where no project directories exist yet.
+
 ### Public vs. private: repo boundary = trust boundary
 
 This is how genuinely-public skills coexist with work/personal ones **without risk
