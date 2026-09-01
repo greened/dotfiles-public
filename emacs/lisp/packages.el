@@ -194,6 +194,25 @@ local checkout of the package found under `local-repos-directory'
   :config
   (which-key-mode +1))
 
+;; Org's entry points live under a `C-c o' prefix map rather than taking three
+;; letters of the user-reserved `C-c <letter>' space.  The second key keeps the
+;; canonical letter, so `C-c o a' is `org-agenda'; with which-key, `C-c o' and a
+;; pause lists them.  Defined OUTSIDE the `use-package org' :config below on
+;; purpose: these commands are autoloaded, so binding them here makes them work
+;; on a cold Emacs, where the old :config bindings did not exist until an org
+;; file had been opened.
+;;
+;; To go back to the canonical top-level trio, drop this block and restore:
+;;   (global-set-key (kbd "C-c l") 'org-store-link)
+;;   (global-set-key (kbd "C-c a") 'org-agenda)
+;;   (global-set-key (kbd "C-c c") 'org-capture)
+(defvar my/org-command-map (make-sparse-keymap "org")
+  "Keymap for org entry points, bound to the `C-c o' prefix.")
+(define-key my/org-command-map (kbd "l") #'org-store-link)
+(define-key my/org-command-map (kbd "a") #'org-agenda)
+(define-key my/org-command-map (kbd "c") #'org-capture)
+(global-set-key (kbd "C-c o") my/org-command-map)
+
 (use-package org
   :ensure t
   :mode (("\\.org$" . org-mode))
@@ -203,9 +222,7 @@ local checkout of the package found under `local-repos-directory'
 ;  (require 'org)
 ;  (require 'ol-notmuch)
   (progn
-    (global-set-key (kbd "C-c l") 'org-store-link)
-    (global-set-key (kbd "C-c a") 'org-agenda)
-    (global-set-key (kbd "C-c c") 'org-capture)
+    ;; Entry-point keys are bound above, under the `C-c o' prefix map.
     (setq org-src-fontify-natively 1)
     (setq org-catch-invisible-edits `smart)
     (setq org-modules '(org-bbdb
