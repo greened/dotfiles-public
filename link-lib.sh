@@ -7,9 +7,39 @@ _dot_backup() {  # dest — replace an existing symlink, back up a real file
   elif [ -e "$dest" ]; then mv "$dest" "$dest.pre-dotfiles.$(date +%s)"; fi
 }
 
+# dest — fail if dest's parent directory is a symlink pointing outside $HOME.
+#
+# `mkdir -p` and `ln` both FOLLOW a symlinked parent, so deploying e.g.
+# ~/.ssh/config while ~/.ssh is a symlink writes into whatever that points at
+# rather than into the home we were asked to deploy into.  That is not
+# hypothetical: running this with $HOME redirected to a scratch directory whose
+# .ssh symlinks back to the real one silently replaced the real ~/.ssh/config.
+# Deploying into someone else's home is never what was meant, so fail closed and
+# say which link and which directory.
+#
+# A symlink that stays INSIDE $HOME is left alone -- pointing ~/.ssh at, say,
+# ~/sync/ssh is a legitimate arrangement and the write cannot escape.  $HOME
+# itself is never checked: a symlinked home (/home/x -> /var/home/x) is normal.
+_dot_parent_ok() {
+  local dest="$1" parent real_parent real_home
+  parent="$(dirname "$dest")"
+  [ "$parent" = "$HOME" ] && return 0
+  [ -L "$parent" ] || return 0
+  real_parent="$(cd "$parent" 2>/dev/null && pwd -P)" || return 0
+  real_home="$(cd "$HOME" 2>/dev/null && pwd -P)" || return 0
+  case "$real_parent" in
+    "$real_home"|"$real_home"/*) return 0 ;;
+  esac
+  echo "!! refusing $dest: parent $parent is a symlink to $real_parent," >&2
+  echo "   which is outside \$HOME ($real_home).  Writing there would modify" >&2
+  echo "   another home directory.  Make it a real directory and re-run." >&2
+  return 1
+}
+
 link() {  # src dest — symlink dest -> src (backs up / replaces whatever is there)
   local src="$1" dest="$2"
   [ -e "$src" ] || { echo "   warn: missing $src (skip $(basename "$dest"))" >&2; return 0; }
+  _dot_parent_ok "$dest" || return 1
   _dot_backup "$dest"
   mkdir -p "$(dirname "$dest")"
   ln -sfn "$src" "$dest"
@@ -17,6 +47,7 @@ link() {  # src dest — symlink dest -> src (backs up / replaces whatever is th
 
 realsource() {  # dest repofile — write dest as a real file that sources repofile
   local dest="$1" repofile="$2"
+  _dot_parent_ok "$dest" || return 1
   _dot_backup "$dest"
   printf '# managed: source the dotfiles base\n[ -r "%s" ] && . "%s"\n' "$repofile" "$repofile" > "$dest"
 }
