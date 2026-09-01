@@ -103,8 +103,14 @@ one-line comment items.  Those belong in the review queue, not the agenda.
   :type '(repeat symbol)
   :group 'agenda-feeds)
 
-;; gazette owns the Atlassian credential and the REST call, so the Jira feed
-;; borrows its client rather than growing a second one.  Guarded like gaffer.
+;; INTERIM, not the intended design.  gazette owns the Atlassian credential and
+;; the REST call, so the Jira feed borrows its client rather than growing a
+;; second one -- but gazette is a weekly-status APPLICATION, and depending on it
+;; for data access inverts the layering.  Its ~35-line Atlassian layer is being
+;; extracted into a client package of its own (Jira and Confluence together,
+;; three-plus consumers already); when that lands, this feed switches to it and
+;; the in-function `require' below goes away.  See the extraction TODO before
+;; building anything else on top of this.
 (declare-function gazette--jira-search "gazette")
 
 (defvar agenda-feeds-alist
@@ -249,6 +255,14 @@ Borrows gazette's Atlassian client, so it needs no credential of its own.  This
 makes a synchronous network call: it is meant to run when you ask for the
 agenda, never from a timer."
   (interactive)
+  ;; INTERIM (see the note at `gazette--jira-search' above).  Required HERE, not
+  ;; at top level: gazette is an elpaca package loaded asynchronously, so a
+  ;; top-level require fails while this package loads mid-init.  Inside the
+  ;; function it runs long after init.  Without it the feed silently wrote
+  ;; "unavailable" unless gazette happened to have been opened already, which is
+  ;; precisely the invisible staleness these feeds exist to avoid.
+  (unless (fboundp 'gazette--jira-search)
+    (ignore-errors (require 'gazette)))
   (let ((file (agenda-feeds-file "jira.org"))
         (issues (and (fboundp 'gazette--jira-search)
                      (gazette--jira-search agenda-feeds-jira-jql))))
