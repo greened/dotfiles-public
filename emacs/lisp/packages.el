@@ -672,6 +672,28 @@ PRIORITY may be one of the characters ?A, ?B, or ?C."
     ;; present.
     (setq org-capture-templates nil)))
 
+(use-package quarry
+  ;; Atlassian client: JQL search, issue comments, Confluence read and write.
+  ;; Fetching only, with no opinion about what the data is for, so more than one
+  ;; thing can share it -- gazette's weekly report, the Jira agenda feed and the
+  ;; gaffer PR hooks all want the same calls.  Credentials (site, email, token
+  ;; provider) live in an overlay's `(with-eval-after-load 'quarry ...)'.
+  ;;
+  ;; `:demand t' rather than deferred: it is a library with no init-time cost
+  ;; and no keymap to hang deferral off, and agenda-feeds requires it at top
+  ;; level.  Deferring a package is exactly what forced the in-function require
+  ;; that this replaces.
+  ;;
+  ;; KEEP THIS BEFORE `agenda-feeds' BELOW.  agenda-feeds is a LOCAL package
+  ;; (`:ensure nil' + `:load-path') with `:demand t', so it loads immediately
+  ;; from disk and its top-level `(require 'quarry)' runs there and then, while
+  ;; elpaca activates quarry only when it reaches this queue entry.  Declared
+  ;; after agenda-feeds, the require fails with "Cannot open load file: quarry"
+  ;; and aborts init -- verified in a batch Emacs with quarry absent.  Order is
+  ;; the whole fix; `:demand' on this block does not supply it.
+  :ensure (:fetcher github :repo "greened/quarry" :try-local t)
+  :demand t)
+
 ;; Generated agenda feeds: each source of work becomes an org file the agenda
 ;; reads, so "what am I working on today?" is one view rather than several tools.
 (use-package agenda-feeds
@@ -3818,20 +3840,6 @@ Confluence account id.  Idempotent -- safe to re-run after an overlay sets
   ;; directly, so :bind-keymap alone would leave them void on a cold Emacs.
   :demand t
   :bind-keymap ("C-c g" . gaffer-command-map))
-
-(use-package quarry
-  ;; Atlassian client: JQL search, issue comments, Confluence read and write.
-  ;; Fetching only, with no opinion about what the data is for, so more than one
-  ;; thing can share it -- gazette's weekly report, the Jira agenda feed and the
-  ;; gaffer PR hooks all want the same calls.  Credentials (site, email, token
-  ;; provider) live in an overlay's `(with-eval-after-load 'quarry ...)'.
-  ;;
-  ;; `:demand t' rather than deferred: it is a library with no init-time cost
-  ;; and no keymap to hang deferral off, and agenda-feeds requires it at top
-  ;; level.  Deferring a package is exactly what forced the in-function require
-  ;; that this replaces.
-  :ensure (:fetcher github :repo "greened/quarry" :try-local t)
-  :demand t)
 
 (use-package gazette
   ;; Weekly status report: assemble from Jira + GitHub, edit as org, render to
