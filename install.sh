@@ -120,7 +120,7 @@ bash "$PUB/link.sh"
 # ~/.claude: a LIST of repos, each cloned under $CLAUDE_HOME and linked into
 # ~/.claude by its own link step.  This is where the public/private split lives:
 # list a PUBLIC base repo first (genuinely shareable skills/agents), then PRIVATE
-# overlays (work/work, personal) after it.  Each repo is its own trust
+# overlays (work, personal) after it.  Each repo is its own trust
 # boundary -- the public repo is authored public, never filtered from a private
 # one -- and the link step composes them all flat into ~/.claude, so the tiers
 # coexist at runtime while living in separate repos.  The public dotfiles base

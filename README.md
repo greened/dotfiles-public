@@ -141,7 +141,7 @@ of leaking the private ones**: split them by *repo*, not by a filter.
 - A **public base repo** holds only shareable skills/agents. It is authored public
   and can be published as-is — you never derive it by stripping a private repo
   (which is how secrets escape).
-- **Private overlay repo(s)** hold work/work and personal content and never
+- **Private overlay repo(s)** hold work and personal content and never
   leave their private remotes.
 - The link step composes every repo flat into `~/.claude`, so at runtime the tiers
   are one config; on disk they stay in separate repos with separate visibility.

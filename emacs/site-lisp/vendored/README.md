@@ -8,7 +8,7 @@ vendored here rather than installed via elpaca/MELPA. Each is loaded from a
 |------|----------|--------------|
 | `llvm-mode.el` | [llvm-project](https://github.com/llvm/llvm-project) `llvm/utils/emacs/llvm-mode.el` | Lives inside the llvm-project repo; no MELPA package. |
 | `tablegen-mode.el` | [llvm-project](https://github.com/llvm/llvm-project) `llvm/utils/emacs/tablegen-mode.el` | Same as above. |
-| `google-c-style.el` | Google (2008); also on MELPA | Kept vendored so the `"Google"` c-style is registered **eagerly at startup**, before overlay styles that inherit from it (e.g. the work `monorepo-c-style`). elpaca loads async at `after-init`, which would be too late. |
+| `google-c-style.el` | Google (2008); also on MELPA | Kept vendored so the `"Google"` c-style is registered **eagerly at startup**, before overlay styles that inherit from it (an overlay defines a work C style that does). elpaca loads async at `after-init`, which would be too late. |
 
 ## Keeping the LLVM modes current
 

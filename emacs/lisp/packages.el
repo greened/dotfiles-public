@@ -2000,8 +2000,9 @@ Start `ielm' if it's not already running."
 ;; -------------------------------------------------------------------------
 
 ;; Google C/C++ style.  Loaded eagerly (:demand) so the "Google" style is
-;; registered before overlays add styles that inherit from it (e.g. the work
-;; monorepo-c-style).  On MELPA, but kept vendored because elpaca loads async
+;; registered before overlays add styles that inherit from it (an overlay
+;; defines a work C style that does).  On MELPA, but kept vendored because
+;; elpaca loads async
 ;; (after-init) -- too late for that overlay style inheritance.
 (use-package google-c-style
   :ensure nil
@@ -2356,9 +2357,9 @@ Start `ielm' if it's not already running."
   :ensure t
   :commands (lsp lsp-deferred)
   ;; Auto-start on C/C++ buffers.  Two clients cover the cases:
-  ;;   * remote monorepo files (TRAMP) -> the work overlay's
-  ;;     clangd-monorepo-remote client, which uses the shared remote index
-  ;;     (see dotfiles-overlays/work/emacs/work.el).
+  ;;   * remote work-monorepo files (TRAMP) -> the work overlay's remote
+  ;;     clangd client, which uses the shared remote index (see that
+  ;;     overlay's emacs config).
   ;;   * everything else (local hobby projects) -> lsp's built-in clangd
   ;;     client, which runs a local clangd and builds its OWN background index.
   ;;     Give the project a compile_commands.json (cmake
@@ -2373,10 +2374,10 @@ Start `ielm' if it's not already running."
   ;; Adopt the detected VC root without prompting.  Each monorepo git worktree
   ;; is its own root, so with the default (nil) lsp asks to import the root once
   ;; per new worktree; the guess (project.el/vc -> the worktree's own toplevel)
-  ;; is exactly the root the monorepo-remote clangd client uses for
+  ;; is exactly the root the remote clangd client uses for
   ;; --project-root, so auto-adopting it is correct for both clangd clients.
   (lsp-auto-guess-root t)
-  ;; Remote (TRAMP) trees like the monorepo are huge: never inotify-watch them.
+  ;; Remote (TRAMP) trees like a work monorepo are huge: never inotify-watch them.
   (lsp-enable-file-watchers nil)
   ;; Use the built-in flymake backend so we don't need flycheck.
   (lsp-diagnostics-provider :flymake)
