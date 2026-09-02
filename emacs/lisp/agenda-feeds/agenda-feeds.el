@@ -37,17 +37,23 @@
 ;;   * Generated files are never hand-edited.  Each carries a GENERATED banner,
 ;;     and a refresh overwrites it without asking.  Put durable notes in your own
 ;;     org files and let these hold only what a source can regenerate.
-;;   * Nothing here performs network I/O.  Feeds that need a network fetch (a
-;;     calendar, an issue tracker) belong in an out-of-process fetcher that
-;;     writes its file on a timer; this package only reads local state.  A
-;;     blocking fetch inside a shared Emacs freezes the session, which is a
-;;     mistake worth designing out rather than remembering.
+;;   * A feed that needs the network fetches SYNCHRONOUSLY, when you ask for
+;;     the agenda, and never from a timer.  One key both refreshes and opens,
+;;     so a background fetcher would be machinery for a problem nobody has.
+;;     The cost is real, though: a blocking fetch in a shared Emacs freezes the
+;;     session, so every such feed carries a hard timeout, a size bound, and a
+;;     max age that stops a second look paying for a second round trip.
 ;;
 ;; Feeds so far:
 ;;
 ;;   `agenda-feeds-work-items' -- in-flight branches from the gaffer work-item
 ;;   store: one TODO per change you are actually carrying, tagged with its Jira
 ;;   issue where the title names one.
+;;
+;;   `agenda-feeds-jira' -- issues assigned to you, through quarry.
+;;
+;;   `agenda-feeds-calendar' -- meetings from any number of iCalendar feeds,
+;;   as plain dated headings rather than TODOs, so they land in the day view.
 ;;
 ;; Usage:
 ;;
@@ -59,6 +65,9 @@
 
 (require 'seq)
 (require 'subr-x)
+;; Local to this package and dependency-free, so requiring it costs nothing and
+;; keeps the iCalendar arithmetic testable away from the network.
+(require 'agenda-feeds-ics)
 
 ;; gaffer is an elpaca package loaded asynchronously; requiring it from here
 ;; would fail while this package loads mid-init.  Every call is guarded by
@@ -110,7 +119,8 @@ one-line comment items.  Those belong in the review queue, not the agenda.
 
 (defvar agenda-feeds-alist
   '((work-items :file "work-items.org" :generator agenda-feeds-work-items)
-    (jira       :file "jira.org"       :generator agenda-feeds-jira))
+    (jira       :file "jira.org"       :generator agenda-feeds-jira)
+    (calendar   :file "calendar.org"   :generator agenda-feeds-calendar))
   "Feeds `agenda-feeds-refresh' visits, in order.
 Each entry is (NAME :file BASENAME :generator FUNCTION).  A generator whose
 function is not `fboundp' is skipped, so a feed whose source package is absent
@@ -118,7 +128,8 @@ costs nothing.")
 
 (defcustom agenda-feeds-max-ages
   '((work-items . 0)
-    (jira . 600))
+    (jira . 600)
+    (calendar . 600))
   "Seconds each feed's file stays fresh, by feed name.  0 refreshes every time.
 This is what lets one key both open the agenda and keep it current without
 re-fetching on every press.  A feed built from local state costs nothing and
@@ -126,6 +137,53 @@ wants 0; a feed that makes a network round trip wants a bound, so opening the
 agenda twice in a minute does not pay for it twice.  A feed with no entry here
 is treated as 0."
   :type '(alist :key-type symbol :value-type integer)
+  :group 'agenda-feeds)
+
+(defcustom agenda-feeds-calendars nil
+  "Calendars the calendar feed reads, as an alist of (NAME . URL).
+NAME is a short symbol, used as the org tag on that calendar's events.  URL is
+an address serving iCalendar text, or a function of no arguments returning one.
+
+Prefer the function form.  A calendar's private address is a credential -- it
+grants anyone holding it read access to the calendar -- so it belongs in a
+password store rather than in this variable, in your init file, or in a shell
+history.  It is never written to the feed file or named in an error:
+
+  (setq agenda-feeds-calendars
+        (list (cons \\='google
+                    (lambda () (auth-source-pass-get \\='secret
+                                                     \"calendar/google\")))))"
+  :type '(alist :key-type symbol :value-type (choice string function))
+  :group 'agenda-feeds)
+
+(defcustom agenda-feeds-calendar-days 14
+  "Days from today the calendar feed covers.
+The day view needs only today, but the agenda is also read forward, and one
+fetch covering a fortnight costs no more than one covering a day."
+  :type 'integer
+  :group 'agenda-feeds)
+
+(defcustom agenda-feeds-calendar-timeout 20
+  "Seconds the calendar feed waits for a calendar to answer.
+This fetch is synchronous and runs when you ask for the agenda, so the timeout
+is the only thing standing between a slow server and a frozen Emacs.  On expiry
+the feed fails and its previous file is kept."
+  :type 'integer
+  :group 'agenda-feeds)
+
+(defcustom agenda-feeds-calendar-max-bytes (* 8 1024 1024)
+  "Largest calendar response the feed will parse.
+A calendar is someone else's file and can be arbitrarily large; a year of a busy
+work calendar already runs to a megabyte.  Refusing an oversized one keeps a
+runaway feed from wedging the session it was fetched from."
+  :type 'integer
+  :group 'agenda-feeds)
+
+(defcustom agenda-feeds-calendar-max-events 500
+  "Most events the calendar feed will write.
+Reaching this says so in the file and in a message, since a silently truncated
+agenda reads exactly like a quiet one."
+  :type 'integer
   :group 'agenda-feeds)
 
 (defcustom agenda-feeds-jira-jql
@@ -160,9 +218,19 @@ point of use rather than writing somewhere surprising."
        (string-match agenda-feeds--issue-re title)
        (match-string 1 title)))
 
+(defconst agenda-feeds--timestamp-re
+  "<\\([0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}[^>\n]*\\)>"
+  "An active org timestamp, which a source's text must not be able to forge.")
+
 (defun agenda-feeds--org-escape (s)
-  "S made safe for one line of an org heading."
-  (replace-regexp-in-string "[\r\n]+" " " (string-trim (or s ""))))
+  "S made safe for one line of an org heading.
+Newlines collapse to spaces, so text from a source cannot open a heading or a
+drawer of its own.  A date in angle brackets is turned into parentheses for the
+same reason: org reads an active timestamp anywhere in an entry, so a title
+carrying one would put the entry on that day as well as its real one."
+  (replace-regexp-in-string
+   agenda-feeds--timestamp-re "(\\1)"
+   (replace-regexp-in-string "[\r\n]+" " " (string-trim (or s "")))))
 
 (defun agenda-feeds--banner (source)
   "Header lines for a feed generated from SOURCE."
@@ -275,6 +343,147 @@ from a timer."
     (when (called-interactively-p 'interactive)
       (message "agenda-feeds: %d Jira issue(s) -> %s" (length issues) file))
     file))
+
+(defun agenda-feeds--day-start (time)
+  "Midnight, local, at the start of TIME's day."
+  (let ((d (decode-time time)))
+    (encode-time (list 0 0 0 (decoded-time-day d) (decoded-time-month d)
+                       (decoded-time-year d) nil -1 (decoded-time-zone d)))))
+
+(defun agenda-feeds--org-stamp (start end all-day)
+  "An org timestamp covering START to END, as a date range if ALL-DAY."
+  (let ((day "%Y-%m-%d %a"))
+    (cond
+     (all-day
+      (let ((from (format-time-string day start))
+            (to (format-time-string day end)))
+        (if (equal from to)
+            (format "<%s>" from)
+          (format "<%s>--<%s>" from to))))
+     ((equal (format-time-string "%Y-%m-%d" start)
+             (format-time-string "%Y-%m-%d" end))
+      ;; Org's own one-line form for a meeting, which the agenda renders as a
+      ;; time range rather than as two separate entries.
+      (format "<%s %s-%s>" (format-time-string day start)
+              (format-time-string "%H:%M" start)
+              (format-time-string "%H:%M" end)))
+     (t (format "<%s %s>--<%s %s>"
+                (format-time-string day start)
+                (format-time-string "%H:%M" start)
+                (format-time-string day end)
+                (format-time-string "%H:%M" end))))))
+
+(defun agenda-feeds--calendar-tag (name)
+  "NAME as an org tag.
+Org tags allow only word characters, so anything else becomes an underscore."
+  (replace-regexp-in-string "[^[:alnum:]_@#%]" "_" (format "%s" name)))
+
+(defun agenda-feeds--calendar-fetch (name url)
+  "The iCalendar text calendar NAME serves at URL.
+Errors name only NAME: URL is a credential, so it must not reach a message, an
+error, or the feed file."
+  (require 'url)
+  (let ((buffer (condition-case err
+                    (url-retrieve-synchronously
+                     url t t agenda-feeds-calendar-timeout)
+                  ;; The signal data can quote the URL, so only the symbol is
+                  ;; reported.
+                  (error (error "agenda-feeds: %s fetch failed (%s)"
+                                name (car err))))))
+    (unless buffer
+      (error "agenda-feeds: %s did not answer in %ds"
+             name agenda-feeds-calendar-timeout))
+    (unwind-protect
+        (with-current-buffer buffer
+          (goto-char (point-min))
+          (let ((status (and (re-search-forward "\\`HTTP/[0-9.]+ +\\([0-9]+\\)"
+                                                nil t)
+                             (string-to-number (match-string 1)))))
+            (unless (eq status 200)
+              (error "agenda-feeds: %s returned HTTP %s" name (or status "?")))
+            (when (> (buffer-size) agenda-feeds-calendar-max-bytes)
+              (error "agenda-feeds: %s sent %d bytes, over the %d limit"
+                     name (buffer-size) agenda-feeds-calendar-max-bytes))
+            (search-forward "\n\n" nil 'move)
+            (decode-coding-string
+             (buffer-substring-no-properties (point) (point-max)) 'utf-8)))
+      (kill-buffer buffer))))
+
+(defun agenda-feeds--calendar-entry (name event)
+  "One org entry for EVENT, read from calendar NAME.
+Deliberately not a TODO: a meeting is not a task, and as a plain dated heading
+it lands in the agenda's day view instead of the work-in-flight block."
+  (let ((summary (agenda-feeds--org-escape (plist-get event :summary)))
+        (location (agenda-feeds--org-escape (plist-get event :location))))
+    (concat
+     "** " summary "   :" (agenda-feeds--calendar-tag name) ":\n"
+     "   " (agenda-feeds--org-stamp (plist-get event :start)
+                                    (plist-get event :end)
+                                    (plist-get event :all-day))
+     "\n"
+     (if (string-empty-p location)
+         ""
+       (concat "   :PROPERTIES:\n"
+               "   :LOCATION: " location "\n"
+               "   :END:\n")))))
+
+;;;###autoload
+(defun agenda-feeds-calendar ()
+  "Write the calendar feed from `agenda-feeds-calendars', and return its file.
+Fetches each calendar synchronously, so it is meant to run when you ask for the
+agenda and never from a timer.
+
+One calendar failing fails the whole feed, which keeps the previous file rather
+than writing a partial one.  All the calendars share a file, so a half-written
+one would show today's meetings from one calendar and none from another while
+looking complete -- the failure mode this package exists to avoid."
+  (interactive)
+  (let* ((file (agenda-feeds-file "calendar.org"))
+         (start (agenda-feeds--day-start (current-time)))
+         (end (time-add start (* 86400 (max 1 agenda-feeds-calendar-days))))
+         (events nil)
+         (failures nil))
+    (dolist (entry agenda-feeds-calendars)
+      (let* ((name (car entry))
+             (provider (cdr entry))
+             (url (if (functionp provider) (funcall provider) provider)))
+        (condition-case err
+            (progn
+              (unless (and (stringp url) (not (string-empty-p url)))
+                (error "agenda-feeds: %s has no URL" name))
+              (dolist (event (agenda-feeds-ics-events
+                              (agenda-feeds--calendar-fetch name url)
+                              start end))
+                (push (cons name event) events)))
+          (error (push (error-message-string err) failures)))))
+    ;; Every calendar is tried before failing, so one message names them all.
+    (when failures
+      (error "%s" (string-join (nreverse failures) "; ")))
+    (setq events (sort (nreverse events)
+                       (lambda (a b) (time-less-p (plist-get (cdr a) :start)
+                                                  (plist-get (cdr b) :start)))))
+    (let* ((total (length events))
+           (shown (min total agenda-feeds-calendar-max-events))
+           (kept (seq-take events shown)))
+      (make-directory (file-name-directory file) t)
+      (with-temp-file file
+        (insert (agenda-feeds--banner "Calendars"))
+        (insert (format "* Next %d day(s)\n" agenda-feeds-calendar-days))
+        (when (> total shown)
+          (insert (format "** TRUNCATED: %d of %d events shown\n"
+                          shown total)))
+        (if kept
+            (dolist (row kept)
+              (insert (agenda-feeds--calendar-entry (car row) (cdr row))))
+          (insert (if agenda-feeds-calendars
+                      "** No events in the window\n"
+                    "** No calendars configured\n"))))
+      (when (called-interactively-p 'interactive)
+        (message "agenda-feeds: %d calendar event(s)%s -> %s"
+                 shown
+                 (if (> total shown) (format " of %d, TRUNCATED" total) "")
+                 file))
+      file)))
 
 (defun agenda-feeds--stale-p (name file)
   "Non-nil if FILE should be regenerated for feed NAME.
