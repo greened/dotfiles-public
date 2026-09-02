@@ -684,15 +684,29 @@ PRIORITY may be one of the characters ?A, ?B, or ?C."
   ;; level.  Deferring a package is exactly what forced the in-function require
   ;; that this replaces.
   ;;
-  ;; KEEP THIS BEFORE `agenda-feeds' BELOW.  agenda-feeds is a LOCAL package
-  ;; (`:ensure nil' + `:load-path') with `:demand t', so it loads immediately
-  ;; from disk and its top-level `(require 'quarry)' runs there and then, while
-  ;; elpaca activates quarry only when it reaches this queue entry.  Declared
-  ;; after agenda-feeds, the require fails with "Cannot open load file: quarry"
-  ;; and aborts init -- verified in a batch Emacs with quarry absent.  Order is
-  ;; the whole fix; `:demand' on this block does not supply it.
+  ;; KEEP THIS BEFORE `agenda-feeds' BELOW, AND KEEP THE `elpaca-wait'.
+  ;; agenda-feeds is a LOCAL package (`:ensure nil' + `:load-path') with
+  ;; `:demand t', so it loads from disk the moment its form is read and its
+  ;; top-level `(require 'quarry)' runs there and then.  This block does not
+  ;; load quarry, it only ENQUEUES it: elpaca installs and activates
+  ;; asynchronously.  So being declared first is not enough on its own -- the
+  ;; synchronous form below still runs before the queue is processed, and the
+  ;; require fails with "Cannot open load file: quarry".
+  ;;
+  ;; That is not hypothetical.  It happened on 2026-09-02 with this block
+  ;; already sitting above agenda-feeds: init logged
+  ;;   Error (use-package): agenda-feeds/:catch: Cannot open load file ... quarry
+  ;; and `agenda-feeds' was simply absent afterwards, while `(featurep 'quarry)'
+  ;; read t because the queue had drained later.  A missing feed generator does
+  ;; not announce itself, so this fails quietly rather than loudly.
   :ensure (:fetcher github :repo "greened/quarry" :try-local t)
   :demand t)
+
+;; Drain the queue so quarry is really on `load-path' before the synchronous
+;; form below requires it.  Cheap here: only a handful of packages are queued
+;; this early, so the wait is short, which is why quarry is declared up here
+;; rather than beside the other personal packages.
+(elpaca-wait)
 
 ;; Generated agenda feeds: each source of work becomes an org file the agenda
 ;; reads, so "what am I working on today?" is one view rather than several tools.
