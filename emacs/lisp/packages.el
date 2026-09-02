@@ -1047,6 +1047,20 @@ end tell
   ;; Highlight questionable whitespace and 80+ columns (from the former face.el).
   (setq whitespace-style '(face empty lines-tail trailing))
   (setq whitespace-line-column 80)
+  ;; Terminals are exempt from the GLOBAL mode.  `whitespace-global-modes' is
+  ;; the only place this works: the global mode applies itself from
+  ;; `after-change-major-mode-hook', which runs after a major mode's own hook,
+  ;; so switching the mode off in `vterm-mode-hook' was undone a moment later.
+  ;; (That hook also called `whitespace-mode' with no argument, which TOGGLES,
+  ;; and the global path never sets the buffer-local flag -- so it turned
+  ;; highlighting on rather than off.)
+  ;;
+  ;; Only vterm needs naming.  The enable predicate already exempts buffers
+  ;; called `*...*', which is what spares every other terminal and special
+  ;; buffer; vterm falls outside it because `vterm-buffer-name-string' below
+  ;; drops the asterisks.  Matched with `derived-mode-p', so a derived terminal
+  ;; mode is covered too.
+  (setq whitespace-global-modes '(not vterm-mode))
   (global-whitespace-mode 1)
   :diminish whitespace-mode)
 
@@ -1432,10 +1446,6 @@ end tell
   (add-hook 'vterm-mode-hook
             (lambda ()
               (set (make-local-variable 'buffer-face-mode-face) 'fixed-pitch)
-              ;; Disable whitespace mode if enabled.
-              (setq show-trailing-whitespace nil)
-              (if global-whitespace-mode
-                  (whitespace-mode))
               (buffer-face-mode t))))
 
 ;; Respawn a stale ssh vterm in one command (C-c R).  A "local but shareable"
