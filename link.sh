@@ -16,6 +16,15 @@ realsource "$HOME/.bashrc"       "$PUB/bash/bashrc"
 realsource "$HOME/.bash_profile" "$PUB/bash/bash_profile"
 link "$PUB/emacs/emacsrc"        "$HOME/.emacs"
 link "$PUB/emacs/gnusrc"         "$HOME/.gnus"
+
+# MCP stdio transport for the elisp MCP servers, vendored from mcp-server-lib
+# (see the header in that file).  It goes to ~/.local/bin rather than being
+# sourced, because the MCP clients spawn it as a program: they run on a remote
+# host where the elisp package -- and so the packaged copy of this script -- is
+# not installed.  Every machine with this repo now has it, instead of the one
+# machine where it had been hand-copied.  `link' mkdir -p's the parent, and the
+# exec bit comes from the repo file.
+link "$PUB/emacs/emacs-mcp-stdio.sh" "$HOME/.local/bin/emacs-mcp-stdio.sh"
 link "$PUB/tmux/tmux.conf"       "$HOME/.tmux.conf"
 link "$PUB/ssh/config"           "$HOME/.ssh/config"
 link "$PUB/gnupg/gpg-agent.conf" "$HOME/.gnupg/gpg-agent.conf"
