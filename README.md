@@ -181,3 +181,9 @@ is live on the next shell.  Two things to know:
 
 Whatever an overlay links, it should keep linking (or `unlink_managed`) so that a
 reinstall never leaves a dangling link behind.
+
+`link` refuses to write through a symlinked parent directory that leaves `$HOME`
+when `$HOME` is not this account's home — a redirected `$HOME` whose `.ssh`
+pointed back at the real one once replaced `~/.ssh/config`.  `./link-selftest.sh`
+covers that guard; it exercises the predicate and never runs an install against a
+fake home.
