@@ -17,22 +17,42 @@ _dot_backup() {  # dest — replace an existing symlink, back up a real file
 # Deploying into someone else's home is never what was meant, so fail closed and
 # say which link and which directory.
 #
-# A symlink that stays INSIDE $HOME is left alone -- pointing ~/.ssh at, say,
-# ~/sync/ssh is a legitimate arrangement and the write cannot escape.  $HOME
-# itself is never checked: a symlinked home (/home/x -> /var/home/x) is normal.
+# The fault there was the REDIRECTED $HOME, though, not the symlink: escaping
+# $HOME only does damage when $HOME is not where this account lives.  Deploying
+# into your own home, a symlinked parent is your own arrangement and may point
+# wherever you keep things -- ~/.config on a network volume is ordinary, and
+# refusing it would be a guard that blocks the install it was added to protect.
+# So the check applies when $HOME differs from the account's home, and also when
+# the account's home cannot be read, which leaves $HOME unvouched-for.
+#
+# $HOME itself is never inspected: a symlinked home (/home/x -> /var/home/x) is
+# normal, and both sides are compared resolved.
+_dot_account_home() {
+  local h
+  h="$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6)" || h=''
+  [ -n "$h" ] || h="$(eval echo "~$(id -un)" 2>/dev/null)"
+  case "$h" in
+    /*) (cd "$h" 2>/dev/null && pwd -P) ;;
+  esac
+}
+
 _dot_parent_ok() {
-  local dest="$1" parent real_parent real_home
+  local dest="$1" parent real_parent real_home account_home
   parent="$(dirname "$dest")"
   [ "$parent" = "$HOME" ] && return 0
   [ -L "$parent" ] || return 0
-  real_parent="$(cd "$parent" 2>/dev/null && pwd -P)" || return 0
   real_home="$(cd "$HOME" 2>/dev/null && pwd -P)" || return 0
+  account_home="$(_dot_account_home)"
+  [ -n "$account_home" ] && [ "$real_home" = "$account_home" ] && return 0
+  real_parent="$(cd "$parent" 2>/dev/null && pwd -P)" || return 0
   case "$real_parent" in
     "$real_home"|"$real_home"/*) return 0 ;;
   esac
-  echo "!! refusing $dest: parent $parent is a symlink to $real_parent," >&2
-  echo "   which is outside \$HOME ($real_home).  Writing there would modify" >&2
-  echo "   another home directory.  Make it a real directory and re-run." >&2
+  echo "!! refusing $dest: \$HOME is $real_home, but this account's home is" >&2
+  echo "   ${account_home:-unreadable}, and parent $parent is a symlink to" >&2
+  echo "   $real_parent -- outside \$HOME.  Writing there would modify a home" >&2
+  echo "   you did not ask to deploy into.  Point \$HOME at the tree you mean," >&2
+  echo "   or make the parent a real directory." >&2
   return 1
 }
 
