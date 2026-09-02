@@ -40,8 +40,10 @@
 # three timeouts:
 #   diff ~/.emacs.d/elpaca/sources/mcp-server-lib/emacs-mcp-stdio.sh \
 #        ~/lib/dotfiles/emacs/emacs-mcp-stdio.sh
-# Upstream issue proposing a configurable EMACS_MCP_TIMEOUT is pending; drop
-# this delta once it lands.
+# A configurable EMACS_MCP_TIMEOUT is proposed upstream in issue #10:
+#   https://github.com/laurynas-biveinis/mcp-server-lib.el/issues/10
+# Check whether it landed before re-adding the timeouts by hand -- if it did,
+# drop this delta entirely and set the env var instead.
 # ---------------------------------------------------------------------------
 
 set -eu -o pipefail
