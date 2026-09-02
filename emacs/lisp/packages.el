@@ -3819,6 +3819,20 @@ Confluence account id.  Idempotent -- safe to re-run after an overlay sets
   :demand t
   :bind-keymap ("C-c g" . gaffer-command-map))
 
+(use-package quarry
+  ;; Atlassian client: JQL search, issue comments, Confluence read and write.
+  ;; Fetching only, with no opinion about what the data is for, so more than one
+  ;; thing can share it -- gazette's weekly report, the Jira agenda feed and the
+  ;; gaffer PR hooks all want the same calls.  Credentials (site, email, token
+  ;; provider) live in an overlay's `(with-eval-after-load 'quarry ...)'.
+  ;;
+  ;; `:demand t' rather than deferred: it is a library with no init-time cost
+  ;; and no keymap to hang deferral off, and agenda-feeds requires it at top
+  ;; level.  Deferring a package is exactly what forced the in-function require
+  ;; that this replaces.
+  :ensure (:fetcher github :repo "greened/quarry" :try-local t)
+  :demand t)
+
 (use-package gazette
   ;; Weekly status report: assemble from Jira + GitHub, edit as org, render to
   ;; Confluence/Markdown/Slack/plain, publish to Confluence.  Local :try-local

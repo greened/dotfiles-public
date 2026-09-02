@@ -103,15 +103,10 @@ one-line comment items.  Those belong in the review queue, not the agenda.
   :type '(repeat symbol)
   :group 'agenda-feeds)
 
-;; INTERIM, not the intended design.  gazette owns the Atlassian credential and
-;; the REST call, so the Jira feed borrows its client rather than growing a
-;; second one -- but gazette is a weekly-status APPLICATION, and depending on it
-;; for data access inverts the layering.  Its ~35-line Atlassian layer is being
-;; extracted into a client package of its own (Jira and Confluence together,
-;; three-plus consumers already); when that lands, this feed switches to it and
-;; the in-function `require' below goes away.  See the extraction TODO before
-;; building anything else on top of this.
-(declare-function gazette--jira-search "gazette")
+;; The Jira feed reads through quarry, the Atlassian client.  A library, so a
+;; top-level require costs nothing at init and the feed can rely on it being
+;; there.
+(require 'quarry)
 
 (defvar agenda-feeds-alist
   '((work-items :file "work-items.org" :generator agenda-feeds-work-items)
@@ -251,21 +246,12 @@ Org tags cannot contain a hyphen, so a key's hyphen becomes an underscore."
 ;;;###autoload
 (defun agenda-feeds-jira ()
   "Write the Jira feed from `agenda-feeds-jira-jql', and return its file name.
-Borrows gazette's Atlassian client, so it needs no credential of its own.  This
-makes a synchronous network call: it is meant to run when you ask for the
-agenda, never from a timer."
+Reads through quarry, so it needs no credential of its own.  This makes a
+synchronous network call: it is meant to run when you ask for the agenda, never
+from a timer."
   (interactive)
-  ;; INTERIM (see the note at `gazette--jira-search' above).  Required HERE, not
-  ;; at top level: gazette is an elpaca package loaded asynchronously, so a
-  ;; top-level require fails while this package loads mid-init.  Inside the
-  ;; function it runs long after init.  Without it the feed silently wrote
-  ;; "unavailable" unless gazette happened to have been opened already, which is
-  ;; precisely the invisible staleness these feeds exist to avoid.
-  (unless (fboundp 'gazette--jira-search)
-    (ignore-errors (require 'gazette)))
   (let ((file (agenda-feeds-file "jira.org"))
-        (issues (and (fboundp 'gazette--jira-search)
-                     (gazette--jira-search agenda-feeds-jira-jql))))
+        (issues (quarry-jira-search agenda-feeds-jira-jql)))
     (make-directory (file-name-directory file) t)
     (with-temp-file file
       (insert (agenda-feeds--banner "Jira"))
@@ -285,9 +271,7 @@ agenda, never from a timer."
                (format "   :STATUS:  %s\n" (or (plist-get is :status) "?"))
                (format "   :UPDATED: %s\n" (or (plist-get is :updated) "?"))
                "   :END:\n")))
-        (insert (if (fboundp 'gazette--jira-search)
-                    "** No assigned issues\n"
-                  "** Jira feed unavailable (gazette not loaded)\n"))))
+        (insert "** No assigned issues\n")))
     (when (called-interactively-p 'interactive)
       (message "agenda-feeds: %d Jira issue(s) -> %s" (length issues) file))
     file))
