@@ -1,5 +1,13 @@
 ;; -*-lisp-*-
 
+;; Load a package's source when it is newer than its .elc.  A local checkout
+;; (see `elpaca-recipe-try-local' in lisp/packages.el) is symlinked into its
+;; elpaca build directory, so an edit or a pull leaves the .elc behind.  Without
+;; this, startup loads the stale .elc, and native-comp then late-loads an .eln
+;; built from the new source: the functions get replaced and the new top-level
+;; variables never bind.
+(setq load-prefer-newer t)
+
 ;;(eval-after-load "tramp" '(debug))
 
 ;;(setq debug-on-error t)

@@ -133,6 +133,29 @@ local checkout of the package found under `local-repos-directory'
 
 (setq elpaca-recipe-functions '(elpaca-recipe-try-local))
 
+;; A local checkout moves under its build, so its .elc goes stale on every edit
+;; or pull.  `load-prefer-newer' (top of ../emacsrc) keeps THIS session correct
+;; by loading the newer source.  This refreshes the build after init, so the
+;; next start is fast and native-comp compiles a unit that matches it.
+(defun my/elpaca-rebuild-stale ()
+  "Queue a rebuild for every elpaca package whose source outruns its build."
+  (let (stale)
+    (dolist (dir (and (file-directory-p elpaca-builds-directory)
+                      (directory-files elpaca-builds-directory t "\\`[^.]")))
+      (when (and (file-directory-p dir)
+                 (seq-some (lambda (el)
+                             (let ((elc (concat el "c")))
+                               (and (file-exists-p elc)
+                                    (file-newer-than-file-p el elc))))
+                           (directory-files dir t "\\.el\\'")))
+        (push (intern (file-name-nondirectory dir)) stale)))
+    (when stale
+      (message "elpaca: rebuilding %s" (mapconcat #'symbol-name stale " "))
+      (mapc #'elpaca-rebuild stale)
+      (elpaca-process-queues))))
+
+(add-hook 'elpaca-after-init-hook #'my/elpaca-rebuild-stale)
+
 ;; Install use-package support
 (elpaca elpaca-use-package
   ;; Enable use-package :ensure support for Elpaca.
