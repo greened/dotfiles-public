@@ -24,7 +24,7 @@ names a specific overlay, so nothing private appears here:
 | emacs | loads `*/emacs/*.el`                                         |
 | ssh   | `Include`s `*/ssh/config`                                    |
 | tmux  | `source-file`s `*/tmux/*.conf`                              |
-| git   | each overlay's `git/config` is added to `~/.gitconfig.local` |
+| git   | each overlay's `git/config` is added to `~/.gitconfig.overlays` |
 
 An overlay can also deploy files the base globs don't cover (mail, news, gdb, …)
 and retire obsolete ones, through its own `link.sh` (see below).
@@ -41,7 +41,8 @@ three overlays:
       work/              # employer identity and tools — private
 
 - `personal-config/git/gitconfig` is your `~/.gitconfig` entry point: it includes
-  the generic base and then `~/.gitconfig.local`.
+  the generic base, then the generated `~/.gitconfig.overlays`, then the
+  hand-written `~/.gitconfig.local` for settings true of one machine only.
 - `personal-secret/git/config` sets your personal name/email; `work/git/config`
   sets your employer email and, because it is applied later, wins on the work
   machine.
@@ -176,7 +177,7 @@ is live on the next shell.  Two things to know:
       . "${DOTFILES_LINK_LIB:?run via the base link.sh}"
       OV="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
       link "$OV/mail/mbsyncrc" "$HOME/.mbsyncrc"   # symlink, backs up any existing
-      gclocal_add "$OV/git/config"                 # add to ~/.gitconfig.local
+      gcoverlays_add "$OV/git/config"              # add to ~/.gitconfig.overlays
       unlink_managed "$HOME/.obsolete-thing"       # retire a link you no longer ship
 
 Whatever an overlay links, it should keep linking (or `unlink_managed`) so that a

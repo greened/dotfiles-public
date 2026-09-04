@@ -1,5 +1,5 @@
 # Shared link helpers for the dotfiles base and its overlays.  Sourced, not run;
-# callers set $GCLOCAL before using gclocal_add.
+# callers set $GCOVERLAYS before using gcoverlays_add.
 
 _dot_backup() {  # dest — replace an existing symlink, back up a real file
   local dest="$1"
@@ -82,9 +82,9 @@ unlink_managed() {  # dest — retire an obsolete link, but ONLY if it is a syml
   esac
 }
 
-gclocal_add() {  # gitconfig-fragment — append an include line to $GCLOCAL
+gcoverlays_add() {  # gitconfig-fragment — append an include line to $GCOVERLAYS
   local cfg="$1"
   [ -r "$cfg" ] || return 0
-  [ -n "${GCLOCAL:-}" ] || return 0
-  printf '\tpath = %s\n' "$cfg" >> "$GCLOCAL"
+  [ -n "${GCOVERLAYS:-}" ] || return 0
+  printf '\tpath = %s\n' "$cfg" >> "$GCOVERLAYS"
 }
