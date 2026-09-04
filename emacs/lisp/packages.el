@@ -3701,8 +3701,8 @@ Start `ielm' if it's not already running."
   ;; claude-code-ide.el, so we enable it here rather than adding that package.
   (add-hook 'claude-code-process-environment-functions #'monet-start-server-function)
   (monet-mode 1)
-  (setq claude-code-terminal-backend 'claude)
-  (vterm-code-mode))
+  (setq claude-code-terminal-backend 'vterm)
+  (claude-code-mode))
 (use-package project
   ;; project.el is built-in, so tell elpaca to ignore it
   :elpaca nil
