@@ -806,6 +806,23 @@ and a stale one looks exactly like an accurate one."
   ;; "Couldn't find exit status of `echo ...getconf PATH...'".
   (setq tramp-connection-timeout 120)
 
+  ;; Bound `access-file' on a remote path, so a stalled link raises an error
+  ;; there instead of waiting forever.
+  ;;
+  ;; Know the scope before relying on it: this bounds `access-file' and nothing
+  ;; else.  So it covers `desktop', `recentf', directory reads and tramp's own,
+  ;; but NOT `file-exists-p', `file-attributes' or `insert-file-contents'.  The
+  ;; 20+ hour hang a dead ssh link once caused here is bounded by the host's
+  ;; ssh keepalives, not by this.
+  ;;
+  ;; Why 30 and not a few seconds: tramp wraps the WHOLE access in this
+  ;; timeout, connection setup included, and on expiry it tears the connection
+  ;; down.  Anything near the handshake budget above would kill a cold
+  ;; connection that is merely slow, which is the failure that budget exists to
+  ;; avoid.  30s clears a normal handshake by a wide margin and still fails
+  ;; fast enough to notice.
+  (setq remote-file-name-access-timeout 30)
+
   (setq vc-ignore-dir-regexp
         (format "\\(%s\\)\\|\\(%s\\)"
 	        vc-ignore-dir-regexp
