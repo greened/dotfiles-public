@@ -929,7 +929,65 @@ and a stale one looks exactly like an accurate one."
     (setq server-socket-dir (expand-file-name "~/.ssh"))
     (ignore-errors
       (unless (server-running-p)
-        (server-start)))))
+        (server-start))))
+
+  ;; Sweep dead clients before the server parks a new one.
+  ;;
+  ;; Nothing cleans up a client whose process has stopped being live, and the
+  ;; leak source is unknown.  Once enough accumulate the server stops PARKING a
+  ;; new blocking client and completes it immediately instead: `emacsclient
+  ;; FILE' prints "Waiting for Emacs...", exits 0, and never creates a buffer.
+  ;; Every commit gate then reports success with nobody having read the
+  ;; message, and that is indistinguishable from a fast `C-x #'.  Seen once at
+  ;; 18 clients with 17 of them dead.
+  ;;
+  ;; `process-live-p' is a `process-status' test, the same primitive
+  ;; server.el's own sentinel keys on, and it is STRUCTURAL rather than
+  ;; latency-based: a busy single-threaded Emacs does not make a live client's
+  ;; process read as closed.  Responsiveness is what
+  ;; made the socket reaper unlink five LIVE sockets in one day, which is why
+  ;; that reaper waits minutes.  Nothing here needs to wait.
+  ;;
+  ;; Two clients are deliberately left alone.  A LIVE one may be another
+  ;; session's parked gate, and deleting it destroys an approval in flight.  A
+  ;; DEAD one still holding buffers is the shape a dropped ssh forward leaves
+  ;; behind; `server-kill-new-buffers' is t, so deleting it would kill those
+  ;; buffers, and one of them can hold edits nobody has saved yet.
+
+  (defun my/server-client-process (client)
+    "Return the process for server CLIENT.
+`server-clients' holds processes; older forms hold a list whose car
+is the process."
+    (if (processp client) client (car client)))
+
+  (defun my/server-dead-clients ()
+    "Return the `server-clients' processes that are no longer live."
+    (seq-remove #'process-live-p
+                (mapcar #'my/server-client-process server-clients)))
+
+  (defun my/server-sweep-dead-clients ()
+    "Delete dead server clients that hold no buffers.
+Return a cons of the number swept and the number of dead clients
+left in place.  Never deletes a live client."
+    (interactive)
+    (let* ((dead (my/server-dead-clients))
+           (holding (seq-filter (lambda (p) (process-get p 'buffers)) dead))
+           (sweepable (seq-remove (lambda (p) (process-get p 'buffers)) dead)))
+      (dolist (proc sweepable)
+        (ignore-errors (server-delete-client proc)))
+      (when (called-interactively-p 'interactive)
+        (message "Swept %d dead client(s), left %d holding buffers, %d remain"
+                 (length sweepable) (length holding) (length server-clients)))
+      (cons (length sweepable) (length holding))))
+
+  (defun my/server-sweep-on-accept (&rest _)
+    "Sweep dead clients before the server handles a client command.
+Runs from `server-process-filter', which is the filter on the listening
+socket, so this fires per client command rather than strictly on accept.
+Either way a pile cannot survive to affect the next blocking client."
+    (ignore-errors (my/server-sweep-dead-clients)))
+
+  (advice-add 'server-process-filter :before #'my/server-sweep-on-accept))
 
 (use-package font-lock
   :ensure nil
