@@ -931,6 +931,78 @@ and a stale one looks exactly like an accurate one."
       (unless (server-running-p)
         (server-start))))
 
+  ;; Show a client's buffer WITHOUT taking the window being typed in.
+  ;;
+  ;; The terminal here is a vterm buffer inside this Emacs, not a separate
+  ;; terminal application.  With `server-window' nil, `server-switch-buffer'
+  ;; reaches its `switch-to-buffer' branch and displays the buffer in the
+  ;; SELECTED window, which moves point out of that vterm.  Keystrokes then
+  ;; land in the commit message instead of the shell.  A slow TRAMP read only
+  ;; widens the window for it; the window stealing is the cause.
+  ;;
+  ;; A function `server-window' is funcalled with the buffer and REPLACES that
+  ;; whole branch, so this is the one place that decides.  `display-buffer' does
+  ;; not select a window; `switch-to-buffer' and `pop-to-buffer' both do.
+  ;;
+  ;; `server-raise-frame' goes to nil with it.  `server-switch-buffer' ends
+  ;; with
+  ;;
+  ;;     (when server-raise-frame (select-frame-set-input-focus (window-frame)))
+  ;;
+  ;; which runs after the funcall.  That call reaches `x-focus-frame', which
+  ;; takes keyboard focus for the whole APPLICATION -- so with Emacs not in
+  ;; front, an `emacsclient' would pull focus away from whatever is.  It is the
+  ;; same theft one level up, and it is the grab this setting guards.
+  ;;
+  ;; It has to be a WINDOW in the existing frame, not a new frame.  A pop-up
+  ;; frame was tried first and measured on this macOS build: the new frame
+  ;; becomes the selected one as soon as it is mapped, so point lands in the
+  ;; gate anyway -- the very bug this is fixing.  Adding `no-focus-on-map' and
+  ;; `no-accept-focus' to the frame parameters did not change that; the manual
+  ;; only warns that a window manager may ignore them, and this one does.  So
+  ;; split instead.
+  ;;
+  ;; Splitting also serves visibility better than a second frame did: the
+  ;; buffer lands in the frame already in front of him.  `make-frame-visible'
+  ;; then `raise-frame' covers the case where that frame is ICONIFIED, which
+  ;; was the observed cause of three timed-out gates in one day.
+  ;;
+  ;; The window is dedicated so that killing the buffer deletes the window and
+  ;; restores his layout.  `C-x #' kills it, because `server-kill-new-buffers'
+  ;; is t; without this every commit would leave his frame split.
+  ;;
+  ;; Split explicitly rather than through `display-buffer'.  Measured here:
+  ;; asked for a window other than the selected one, in a frame that had only
+  ;; that one, `display-buffer' returned nil and displayed the buffer NOWHERE.
+  ;; The gate then parked with a client attached and no window showing it, and
+  ;; an invisible gate is the worse failure.  Which action function declined,
+  ;; and why, was not established -- the frame was 91 lines against a
+  ;; `split-height-threshold' of 80, so a height limit does not explain it.
+  ;; `split-window' asks none of those questions, and neither it nor
+  ;; `set-window-buffer' nor `set-window-dedicated-p' selects anything.
+  ;;
+  ;; If the split fails, fall back to plain `display-buffer' and accept that it
+  ;; may take the selected window.  Between the two failures, visible-but-
+  ;; stolen beats invisible: a stolen window inserts keystrokes he can undo,
+  ;; while an unseen gate times out, commits nothing, and reports a hang.
+  (setq server-raise-frame nil)
+  (setq server-window
+        (lambda (buffer)
+          (let ((window
+                 (or (get-buffer-window buffer 0)
+                     (condition-case nil
+                         (let ((new (split-window (frame-root-window)
+                                                  nil 'below)))
+                           (set-window-buffer new buffer)
+                           (set-window-dedicated-p new t)
+                           new)
+                       (error (display-buffer buffer))))))
+            (when (window-live-p window)
+              (let ((frame (window-frame window)))
+                (make-frame-visible frame)
+                (raise-frame frame)))
+            window)))
+
   ;; Sweep dead clients before the server parks a new one.
   ;;
   ;; Nothing cleans up a client whose process has stopped being live, and the
