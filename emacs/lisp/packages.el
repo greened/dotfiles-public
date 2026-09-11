@@ -2580,6 +2580,37 @@ Start `ielm' if it's not already running."
   (lsp-idle-delay 0.5)
   (lsp-headerline-breadcrumb-enable nil))
 
+;; Never let the trunk client probe a TRAMP path.  It froze Emacs for 90
+;; seconds of CPU, repeatedly, and it can never succeed here.
+;;
+;; `lsp-auto-register-remote-clients' (default t) clones every client as
+;; `<id>-tramp' carrying the SAME :activation-fn, so a remote buffer matches
+;; the clone.  `lsp-trunk-check-for-init' then calls `locate-dominating-file'
+;; for .trunk/trunk.yaml, and on a remote name that is one `test -d' per
+;; directory level, over ssh, in series, up to the root.  It runs from
+;; `lsp--init-if-visible' on a timer, so it repeats with no action from me.
+;;
+;; Disabling the client does NOT stop this.  `lsp--supports-buffer?' is one
+;; `and' whose clauses run in order: the :activation-fn is clause 2, while
+;; `lsp-enabled-clients' and `lsp--client-disabled-p' are clauses 3 and 4.
+;; The probe has already run by the time the disable check is consulted.
+;;
+;; Refused for REMOTE names only, which keeps remote clangd working --
+;; `clangd-tramp' activates on a plain language test against ("c" "cpp"
+;; "objective-c" "cuda") and touches no files, so it costs nothing.  The
+;; blunt alternative, setting `lsp-auto-register-remote-clients' to nil,
+;; would have killed remote clangd along with the probe.
+;;
+;; `file-remote-p' is string parsing, not I/O, so the guard is free.  Local
+;; trunk is untouched, though trunk is not installed here and no repo has a
+;; .trunk/trunk.yaml, so this walk could never have found anything.
+;; `lsp-volar--activate-p' (Vue) is the only other remote clone that walks the
+;; filesystem; left alone until it actually shows up.
+(with-eval-after-load 'lsp-trunk
+  (advice-add 'lsp-trunk-check-for-init :before-while
+              (lambda (filename &optional _)
+                (not (file-remote-p filename)))))
+
 (use-package lsp-ui
   :ensure t
   :commands lsp-ui-mode
