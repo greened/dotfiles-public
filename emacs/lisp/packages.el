@@ -1075,7 +1075,115 @@ socket, so this fires per client command rather than strictly on accept.
 Either way a pile cannot survive to affect the next blocking client."
     (ignore-errors (my/server-sweep-dead-clients)))
 
-  (advice-add 'server-process-filter :before #'my/server-sweep-on-accept))
+  (advice-add 'server-process-filter :before #'my/server-sweep-on-accept)
+
+  ;; The sweep above HIDES the leak it treats, so the cause is still open and
+  ;; this records the evidence that settles it.
+  ;;
+  ;; `server-sentinel' ends with an unconditional `server-delete-client', read
+  ;; from the running image's own server.el.  So the escape is inside that
+  ;; function, before the line that actually forgets the client:
+  ;;
+  ;;     (or (eq noframe 'dont-kill-client)
+  ;;         (setq server-clients (delq proc server-clients)))
+  ;;
+  ;; Anything that SIGNALS before that leaves the client listed forever.  The
+  ;; frame loop is the candidate, because it calls `delete-frame', which
+  ;; signals on "Attempt to delete the sole visible or iconified frame".  Two
+  ;; hypotheses are already eliminated: the buffer loop cannot do it, since a
+  ;; blocked `kill-buffer' returns nil rather than signalling and an
+  ;; `unwind-protect' carries on; and a client killed mid-request does not do
+  ;; it either, measured 3 of 3 on a throwaway daemon.
+  ;;
+  ;; Why looking afterwards cannot settle it: anything that finds a leaked
+  ;; client later -- the sweep above, or an interactive look at
+  ;; `server-clients' -- sees the aftermath rather than the cause, because
+  ;; buffers and frames have moved on since the deletion ran.  So a leaked
+  ;; client reading "no buffers, no frames" attributes nothing.  This records
+  ;; the state ON ENTRY.  Note the frame loop clears the `client' frame
+  ;; parameter BEFORE calling `delete-frame', so a signal there leaves zero
+  ;; frames claiming the client -- exactly the signature observed, which is
+  ;; why that signature does not exonerate the frame loop.
+  ;;
+  ;; What to look for: an entry with `:in-list t' AND `:still-listed t' is the
+  ;; leak caught in the act, and `:error' names the signal.  Ordinary clients
+  ;; arrive with `:in-list nil', because the request path has already removed
+  ;; them by the time the sentinel calls in, so `server-delete-client' skips
+  ;; its own body.  Leaks accumulating with no such entry would instead mean
+  ;; the function never sees them listed, which moves the search elsewhere.
+
+  (defvar my/sdc-journal nil
+    "Entry state and outcome of each `server-delete-client' call.
+Newest first.  Bounded by `my/sdc-journal-limit'.")
+
+  (defvar my/sdc-journal-limit 200
+    "How many `server-delete-client' calls `my/sdc-journal' keeps.
+Zero turns the recording off.  A bound is required rather than
+optional: the server handles a client per command, so an unbounded
+list grows for as long as Emacs runs.")
+
+  (defun my/sdc-entry (proc)
+    "Describe PROC as `server-delete-client' sees it on entry."
+    (list :at (format-time-string "%F %T")
+          :name (process-name proc)
+          :status (process-status proc)
+          :buffers (length (process-get proc 'buffers))
+          :terminal (and (process-get proc 'terminal) t)
+          :frames (length (seq-filter
+                           (lambda (f) (eq (frame-parameter f 'client) proc))
+                           (frame-list)))
+          :in-list (and (memq proc server-clients) t)))
+
+  (defun my/sdc-instrument (orig proc &optional noframe)
+    "Record how `server-delete-client' ORIG treats PROC and NOFRAME.
+Logging never changes behaviour: each step is wrapped, and an
+original signal is re-raised unchanged, because a fault here must
+not break client disconnection."
+    (let ((entry (and (> my/sdc-journal-limit 0)
+                      (ignore-errors (my/sdc-entry proc)))))
+      (condition-case err
+          (prog1 (funcall orig proc noframe)
+            (when entry
+              (ignore-errors
+                (push (append entry
+                              (list :outcome 'returned
+                                    :still-listed
+                                    (and (memq proc server-clients) t)))
+                      my/sdc-journal)
+                (setq my/sdc-journal
+                      (seq-take my/sdc-journal my/sdc-journal-limit)))))
+        (error
+         (when entry
+           (ignore-errors
+             (push (append entry
+                           (list :outcome 'signalled
+                                 :error (format "%S" err)
+                                 :still-listed
+                                 (and (memq proc server-clients) t)))
+                   my/sdc-journal)
+             ;; Trim here too, not only on the success path.  This is the
+             ;; branch the instrumentation exists to record, and the condition
+             ;; it is hunting can repeat: a frame that cannot be deleted stays
+             ;; undeletable, so the signals arrive consecutively with no
+             ;; ordinary call in between to apply the bound.
+             (setq my/sdc-journal
+                   (seq-take my/sdc-journal my/sdc-journal-limit))))
+         (signal (car err) (cdr err))))))
+
+  (defun my/sdc-leaks ()
+    "Show the `server-delete-client' calls that left the client listed.
+This is the leak; an empty result means it has not recurred since
+Emacs started."
+    (interactive)
+    (let ((leaks (seq-filter (lambda (e) (plist-get e :still-listed))
+                             my/sdc-journal)))
+      (if (called-interactively-p 'interactive)
+          (message "%d leak(s) of %d recorded call(s)%s"
+                   (length leaks) (length my/sdc-journal)
+                   (if leaks (format ": %S" (car leaks)) ""))
+        leaks)))
+
+  (advice-add 'server-delete-client :around #'my/sdc-instrument))
 
 (use-package font-lock
   :ensure nil
