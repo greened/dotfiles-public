@@ -53,11 +53,17 @@ function setup_emacs {
         export LC_INSIDE_EMACS="${INSIDE_EMACS}"
     fi
 
-    #if [[ "$INSIDE_EMACS" = 'vterm' ]]; then
-
-    #PROMPT_COMMAND='echo -ne "\033]0;\h:\w\007"'
-    PS1=$PS1'\[$(vterm_prompt_end)\]'
-    #fi
+    # Only inside vterm.  vterm_prompt_end emits an OSC escape on every
+    # prompt; unguarded it lands in PLAIN ssh and TRAMP sessions too, where
+    # nothing consumes it.  TRAMP then scans a prompt full of escapes and its
+    # default `tramp-shell-prompt-pattern' never matches, so it re-matches a
+    # growing buffer and spins in re_match_2_internal at 100% CPU, forever.
+    # Diagnosed 2026-09-16; `emacs -Q' hit it, a configured Emacs did not,
+    # because packages.el sets a prompt pattern that tolerates the escapes.
+    if [[ "$INSIDE_EMACS" = 'vterm' ]]; then
+        #PROMPT_COMMAND='echo -ne "\033]0;\h:\w\007"'
+        PS1=$PS1'\[$(vterm_prompt_end)\]'
+    fi
 
     # EDITOR: emacsclient.py wrapper (dispatches on SSH_CLIENT); no -n so it blocks.
     export EDITOR="$HOME/lib/dotfiles/emacs/emacsclient.py"

@@ -799,6 +799,19 @@ and a stale one looks exactly like an accurate one."
   :config
   (setq tramp-verbose 1)
   (setq tramp-default-method "ssh")
+  ;; Tolerates ANSI escapes trailing the prompt.  It exists because
+  ;; `vterm_prompt_end' was leaking into non-vterm shells: the guard around it
+  ;; in bash/lib/emacs.sh had been commented out, so EVERY remote prompt
+  ;; emitted an OSC escape.  Fixed at the source 2026-09-16, so this is no
+  ;; longer load-bearing for that host -- kept because other hosts may still
+  ;; produce a decorated prompt.
+  ;;
+  ;; Without it, TRAMP's DEFAULT pattern never matched such a prompt, so it
+  ;; re-scanned a growing connection buffer and spun in re_match_2_internal at
+  ;; 100% CPU indefinitely -- not a network hang, so no timeout rescued it.
+  ;; `emacs -Q' hit it; a configured Emacs did not, which is exactly what made
+  ;; it hard to see.  Note the trailing \(...\)* here is itself the
+  ;; backtracking-prone shape, so widen it only with care.
   (setq tramp-shell-prompt-pattern "\\(?:^\\|\r\\)[^]#$%>\n]*#?[]#$%>].* *\\(^[\\[[0-9;]*[a-zA-Z] *\\)*")
 
   ;; The dev-VM link can be slow or mid-reconnect at startup; give the
@@ -876,6 +889,9 @@ and a stale one looks exactly like an accurate one."
 ;;(require 'tramp)
 
 (setq tramp-default-method "ssh")
+;; See the commentary on the same setting in the `tramp' use-package block
+;; above: this tolerates ANSI escapes after the prompt, a symptom whose cause
+;; (an unguarded `vterm_prompt_end' in bash/lib/emacs.sh) was fixed 2026-09-16.
 (setq tramp-shell-prompt-pattern "\\(?:^\\|\r\\)[^]#$%>\n]*#?[]#$%>].* *\\(^[\\[[0-9;]*[a-zA-Z] *\\)*")
 
 (setq vc-ignore-dir-regexp
