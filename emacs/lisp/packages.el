@@ -777,7 +777,11 @@ and a stale one looks exactly like an accurate one."
   ;; (add-to-list 'exec-path-from-shell-variables "MODULEPATH")
   ;; (add-to-list 'exec-path-from-shell-variables "LOADEDMODULES")
 
-  (when (memq window-system '(mac ns x))
+  ;; A daemon has no frame yet, so `window-system' is nil.  Test `daemonp' too,
+  ;; or the daemon keeps launchd's bare PATH and never sees /opt/homebrew/bin.
+  ;; That killed the daemon outright: copilot's node was not found, its server
+  ;; exited 127, and the jsonrpc error during startup took the daemon with it.
+  (when (or (daemonp) (memq window-system '(mac ns x)))
     (exec-path-from-shell-initialize)))
 
 (use-package tramp
