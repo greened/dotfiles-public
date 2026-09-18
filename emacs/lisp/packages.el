@@ -943,13 +943,44 @@ and a stale one looks exactly like an accurate one."
   ;; dev hosts, where emacs/emacsclient.py connects to it and rewrites the path
   ;; to a /scp: TRAMP path so this Emacs opens the remote file.  Guard on
   ;; SSH_CLIENT so a remote Emacs never clobbers the forwarded socket.
+  ;; Starting second is SILENT, and that is the whole problem.  `server-start'
+  ;; is skipped when another Emacs already holds the socket, so the second one
+  ;; runs with no server at all: emacsclient cannot reach it, the forwarded
+  ;; socket does not lead to it, and neither do the MCP tools.  Nothing says
+  ;; so.  Measured the hard way -- a daemon held the socket while carrying only
+  ;; a TTY frame, the Emacs actually on screen was a separate process, and so
+  ;; every file opened for review rendered where nobody was looking, for hours.
+  ;; Two frames of one Emacs share a menu bar; those two did not, which is what
+  ;; finally gave it away.  A `message' scrolls past unread, so warn into a
+  ;; buffer that stays.
   (unless (getenv "SSH_CLIENT")
     (setq server-use-tcp nil)
     (setq server-name "emacs-server")
     (setq server-socket-dir (expand-file-name "~/.ssh"))
     (ignore-errors
-      (unless (server-running-p)
-        (server-start))))
+      (let ((sock (expand-file-name server-name server-socket-dir)))
+        (cond
+         ((not (server-running-p))
+          (server-start))
+         ;; `server-running-p' is NOT "someone else owns it": it probes the
+         ;; socket, so it is also t in the Emacs that started the server.  Its
+         ;; own docstring says to use `server-process' to ask whether THIS
+         ;; process started one, and that is the difference that matters here --
+         ;; without it, re-evaluating this file in the owner warns that the
+         ;; owner has no server.  A reload is routine (push, pull, rebuild,
+         ;; load), so the warning would be wrong more often than right, and a
+         ;; warning that cries wolf is worse than the silence it replaced.
+         ;; `daemonp' too: a daemon has no frame to show a warning buffer in.
+         ((and (not (daemonp)) (not server-process))
+          (display-warning
+           'server
+           (format "This Emacs has NO server: another process owns %s.
+
+Frames here cannot be reached by emacsclient, by the forwarded socket,
+or by the MCP tools.  Attach to the owner instead:
+
+    emacsclient -s %s -c -a \"\"" sock sock)
+           :warning))))))
 
   ;; Show a client's buffer WITHOUT taking the window being typed in.
   ;;
