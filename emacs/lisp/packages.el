@@ -3767,7 +3767,14 @@ Start `ielm' if it's not already running."
 ;; entry).  Requires `allow-loopback-pinentry' in gpg-agent.conf.  External gpg
 ;; (pass/auth-source) uses pinentry-mac via `pinentry-program' there; we no
 ;; longer run the emacs-pinentry server, which could hang on a deleted buffer.
-(setq epg-pinentry-mode 'loopback)
+;;
+;; A daemon is the one place loopback cannot work, because it asks `read-passwd'
+;; for the passphrase and a frameless daemon has no minibuffer to ask in.  The
+;; gpg child then waits on a `--command-fd' that never answers, and because the
+;; server filter is single-threaded that one eval wedges every later client.
+;; Leave the mode nil there so gpg falls back to `pinentry-program', which is
+;; pinentry-mac and can put the prompt on screen itself.
+(setq epg-pinentry-mode (if (daemonp) nil 'loopback))
 
 ;; Notify on mail.
 ;; (use-package gnus-desktop-notify
