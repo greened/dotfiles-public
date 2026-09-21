@@ -63,6 +63,11 @@ if [ "$(uname)" = Darwin ]; then
   # rm -rf rather than _dot_backup: the deployed bundle is a real directory, so
   # _dot_backup would rename it aside and leave one dated copy per run.
   # EmacsFrame.app is a name this repo invented, so the path is ours to replace.
+  #
+  # _dot_parent_ok still applies, though, and `link' calls it before the backup:
+  # it refuses a symlinked parent that leaves $HOME when $HOME is not this
+  # account's home.  Skipping it here was an oversight, not a decision.
+  _dot_parent_ok "$HOME/Applications/EmacsFrame.app" || exit 1
   mkdir -p "$HOME/Applications"
   rm -rf "$HOME/Applications/EmacsFrame.app"
   cp -R "$PUB/macos/EmacsFrame.app" "$HOME/Applications/EmacsFrame.app"
