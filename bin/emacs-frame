@@ -1,0 +1,25 @@
+#!/bin/sh
+# Open a GUI frame on the shared Emacs server, starting one if none is running.
+#
+# Why this exists rather than launching Emacs.app: launching Emacs.app gives a
+# SECOND Emacs process.  The first one to start owns the server socket, so the
+# second runs with no server -- unreachable by emacsclient, by the forwarded
+# socket, and by the MCP tools -- and says nothing about it.  A frame from this
+# script belongs to the one Emacs that owns the socket, so there is only ever
+# one.
+#
+# -s takes the FULL PATH on purpose.  The socket is non-default in BOTH its name
+# (`emacs-server') and its directory (~/.ssh, so ssh can RemoteForward it), and
+# emacsclient defaults to name `server' under $TMPDIR.  A bare `-s emacs-server'
+# therefore does NOT find it either.
+#
+# -a "" starts a daemon when none is running, which is what makes this safe as
+# the only launcher: first click of the day still gets an Emacs.
+#
+# -n returns immediately instead of blocking, so a Dock launcher does not sit
+# there spinning waiting for the frame to be closed.
+#
+# Two things to update if Emacs moves: the emacsclient path below, and the icon
+# path in link.sh.
+exec /opt/homebrew/bin/emacsclient \
+     -s "$HOME/.ssh/emacs-server" -c -a "" -n "$@"

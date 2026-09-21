@@ -1,0 +1,7 @@
+#!/bin/sh
+# Dock launcher stub.  Deliberately trivial and deliberately never edited: the
+# Dock will only accept an .app bundle, but a bundle is an awkward thing to keep
+# under version control, so all the behaviour lives in bin/emacs-frame and this
+# only forwards to it.  Changing what the launcher does needs no rebundling and
+# no Launch Services re-registration.
+exec "$HOME/.local/bin/emacs-frame" "$@"

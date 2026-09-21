@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key>
+  <string>EmacsFrame</string>
+  <key>CFBundleIdentifier</key>
+  <string>org.obbligato.emacs-frame</string>
+  <key>CFBundleName</key>
+  <string>EmacsFrame</string>
+  <key>CFBundleDisplayName</key>
+  <string>Emacs Frame</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleShortVersionString</key>
+  <string>1.0</string>
+  <!-- Resources/Emacs.icns is copied in by link.sh from whatever Emacs is
+       installed, and is gitignored: the icon belongs to that Emacs, not here. -->
+  <key>CFBundleIconFile</key>
+  <string>Emacs</string>
+  <!-- The stub execs emacsclient with -n and exits, so this is a launcher
+       rather than a resident app; it should not keep a Dock slot of its own. -->
+  <key>LSUIElement</key>
+  <true/>
+</dict>
+</plist>

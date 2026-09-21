@@ -1,3 +1,5 @@
 *~
 *.elc
 .nfs*
+# Copied in by link.sh from whichever Emacs is installed, not ours to carry.
+macos/*.app/Contents/Resources/*.icns

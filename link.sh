@@ -30,6 +30,32 @@ link "$PUB/emacs/gnusrc"         "$HOME/.gnus"
 # machine where it had been hand-copied.  `link' mkdir -p's the parent, and the
 # exec bit comes from the repo file.
 link "$PUB/emacs/emacs-mcp-stdio.sh" "$HOME/.local/bin/emacs-mcp-stdio.sh"
+
+# Open a frame on the Emacs that owns the server socket, instead of starting a
+# second Emacs that owns nothing.  A program, so it lands in ~/.local/bin like
+# the transport above; the macOS Dock bundle below is only a stub that execs it.
+link "$PUB/bin/emacs-frame"          "$HOME/.local/bin/emacs-frame"
+
+# The Dock will take nothing but an .app, and a bundle is an awkward thing to
+# keep in git, so the bundle here is a stub and all the behaviour lives in
+# bin/emacs-frame.  First platform conditional in this file: link.sh also runs
+# on Linux dev hosts, where a macOS bundle in ~/Applications is just litter.
+# The icon is copied rather than committed -- it belongs to whichever Emacs is
+# installed -- and is gitignored.  Update the source path here if Emacs moves.
+if [ "$(uname)" = Darwin ]; then
+  link "$PUB/macos/EmacsFrame.app" "$HOME/Applications/EmacsFrame.app"
+  # mkdir -p because git carries no empty directory, so Resources/ does not
+  # exist in a fresh clone and the copy would fail there -- on exactly the
+  # machine this is for.  And warn rather than discard the error: a missing
+  # icon is cosmetic, but a copy that fails in silence is how the bundle ends
+  # up with the generic icon and nobody can say why.
+  icns="/opt/homebrew/opt/emacs-plus@31/Emacs.app/Contents/Resources/Emacs.icns"
+  mkdir -p "$PUB/macos/EmacsFrame.app/Contents/Resources"
+  if ! cp -f "$icns" "$PUB/macos/EmacsFrame.app/Contents/Resources/Emacs.icns"; then
+    echo "   warn: no Emacs icon at $icns -- EmacsFrame.app keeps the generic one" >&2
+  fi
+fi
+
 link "$PUB/tmux/tmux.conf"       "$HOME/.tmux.conf"
 link "$PUB/ssh/config"           "$HOME/.ssh/config"
 link "$PUB/gnupg/gpg-agent.conf" "$HOME/.gnupg/gpg-agent.conf"
