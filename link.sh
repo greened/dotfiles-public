@@ -43,17 +43,29 @@ link "$PUB/bin/emacs-frame"          "$HOME/.local/bin/emacs-frame"
 # The icon is copied rather than committed -- it belongs to whichever Emacs is
 # installed -- and is gitignored.  Update the source path here if Emacs moves.
 if [ "$(uname)" = Darwin ]; then
-  link "$PUB/macos/EmacsFrame.app" "$HOME/Applications/EmacsFrame.app"
-  # mkdir -p because git carries no empty directory, so Resources/ does not
-  # exist in a fresh clone and the copy would fail there -- on exactly the
-  # machine this is for.  And warn rather than discard the error: a missing
-  # icon is cosmetic, but a copy that fails in silence is how the bundle ends
-  # up with the generic icon and nobody can say why.
+  # The icon goes into the source bundle BEFORE the copy below, or the copy
+  # would not carry it.  mkdir -p because git carries no empty directory, so
+  # Resources/ does not exist in a fresh clone and the copy would fail there --
+  # on exactly the machine this is for.  And warn rather than discard the
+  # error: a missing icon is cosmetic, but a copy that fails in silence is how
+  # the bundle ends up with the generic icon and nobody can say why.
   icns="/opt/homebrew/opt/emacs-plus@31/Emacs.app/Contents/Resources/Emacs.icns"
   mkdir -p "$PUB/macos/EmacsFrame.app/Contents/Resources"
   if ! cp -f "$icns" "$PUB/macos/EmacsFrame.app/Contents/Resources/Emacs.icns"; then
     echo "   warn: no Emacs icon at $icns -- EmacsFrame.app keeps the generic one" >&2
   fi
+  # COPY the bundle; do NOT `link' it.  The Dock will not pin a symlinked .app
+  # among the applications -- it files it under persistent-others, the folders
+  # section right of the divider, and refuses to move it left.  A copy is cheap
+  # to keep current because the bundle is a stub that execs bin/emacs-frame and
+  # holds no behaviour of its own.
+  #
+  # rm -rf rather than _dot_backup: the deployed bundle is a real directory, so
+  # _dot_backup would rename it aside and leave one dated copy per run.
+  # EmacsFrame.app is a name this repo invented, so the path is ours to replace.
+  mkdir -p "$HOME/Applications"
+  rm -rf "$HOME/Applications/EmacsFrame.app"
+  cp -R "$PUB/macos/EmacsFrame.app" "$HOME/Applications/EmacsFrame.app"
 fi
 
 link "$PUB/tmux/tmux.conf"       "$HOME/.tmux.conf"
