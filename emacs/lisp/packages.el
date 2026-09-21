@@ -1417,6 +1417,7 @@ end tell
 ;;   (emms-default-players))
 
 (use-package emms
+  :ensure t
   :init
   (add-hook 'emms-player-started-hook 'emms-show)
   (setq emms-show-format "Playing: %s")
@@ -1516,8 +1517,32 @@ end tell
       (backward-delete-char-untabify 1))
     ))
 
+;; DISABLED 2026-09-21: bbdb cannot be installed under elpaca as it stands.
+;;
+;; It is an external package, neither built in nor vendored here, so it needs
+;; fetching.  MELPA's recipe generates the file bbdb needs with a rename:
+;;
+;;     :files (:defaults (:rename "lisp/bbdb-site.el.in" "bbdb-site.el"))
+;;
+;; and `:rename' is not implemented in elpaca -- the keyword appears nowhere in
+;; elpaca.el.  Measured: the source has `lisp/bbdb-site.el.in', the build gets
+;; `bbdb.el' and no `bbdb-site.el', and `(require (quote bbdb))' then fails with
+;; "Cannot open load file: bbdb-site".
+;;
+;; `:disabled t' rather than `:ensure nil', which is what it carried since the
+;; initial import.  That marker means "already available -- do not fetch", which
+;; is true for the built-in and vendored packages that use it and false here, so
+;; nothing ever installed bbdb while the `:config' below called its functions
+;; and errored at every startup.  Disabling keeps the mail wiring for whenever
+;; this is fixed.
+;;
+;; Two routes if it is revisited.  Pin the GNU ELPA recipe instead
+;; (emacsmirror/gnu_elpa, branch externals/bbdb, `:files ("*")') IF that branch
+;; ships a generated `bbdb-site.el' -- unverified.  Or add a `:pre-build' that
+;; makes the two substitutions the template wants, `@pkgdatadir@' and
+;; `@PACKAGE_VERSION@', which is what autoconf would do.
 (use-package bbdb
-  :ensure nil
+  :disabled t
   :config
   ;; Integrate sendmail and bbdb
   (add-hook 'mail-setup-hook 'bbdb-insinuate-sendmail)
@@ -2285,8 +2310,7 @@ Start `ielm' if it's not already running."
 ;;   (helm-projectile-on))
 
 (use-package ag
-;;  :straight t
-  )
+  :ensure t)
 
 ;; (use-package treemacs-icons-dired
 ;;   :after treemacs dired
@@ -2541,11 +2565,11 @@ Start `ielm' if it's not already running."
     (c-add-style "linux-tabs-style" linux-tabs-style)))
 
 (use-package bison-mode
-;;  :straight t
+  :ensure t
   :mode "\\(\\.yy\\|\\.y\\)\\'")
 
 (use-package sphinx-doc
-;;  :straight t
+  :ensure t
   :config
   (add-hook 'python-mode-hook (lambda ()
                                 (require 'sphinx-doc)
@@ -3548,7 +3572,7 @@ Start `ielm' if it's not already running."
   )
 
 (use-package magit-imerge
-;;  :straight t
+  :ensure t
   :after magit
   :config
   (define-key magit-mode-map (kbd "C-c C-i") 'magit-gitignore)
@@ -3898,10 +3922,6 @@ Start `ielm' if it's not already running."
 ;;   (progn
 ;;     (setq inferior-lisp-program "/usr/local/bin/sbcl")
 ;;     (setq slime-contribs '(slime-fancy))))
-
-(use-package cask
-  :ensure nil
-  )
 
 (use-package cask-mode
   :ensure t
