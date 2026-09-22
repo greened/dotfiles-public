@@ -26,7 +26,9 @@ what="${1:-all}"
 
 do_build() {
   echo "== build: byte-compile the local packages (warnings are errors)"
-  "$emacs" -Q --batch -l "$here/tools/compile-packages.el"
+  # `-f cp-main' rather than a call at the end of the file, so the file can be
+  # LOADED without running a build.  Its own tests need that.
+  "$emacs" -Q --batch -l "$here/tools/compile-packages.el" -f cp-main
 }
 
 do_test() {
@@ -34,6 +36,9 @@ do_test() {
   # decides the order and fails the run on the first one that fails.
   echo "== test: link guard"
   "$here/link-selftest.sh"
+  echo
+  echo "== test: the build finds every local package"
+  EMACS="$emacs" "$here/compile-packages-selftest.sh"
   echo
   echo "== test: packages.el declares :ensure everywhere"
   EMACS="$emacs" "$here/lint-packages-selftest.sh"

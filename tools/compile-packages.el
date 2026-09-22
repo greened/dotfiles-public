@@ -7,12 +7,22 @@
 ;; The build half of ../check.sh.  Byte-compiles each local package under
 ;; emacs/lisp/ with warnings as errors, and says which it could not.
 ;;
-;; Only the LOCAL PACKAGES are compiled, named one by one below rather than
-;; globbed.  emacs/lisp also holds flat configuration files, which are not
-;; packages: they assume the whole fetched package set and a live session, so
-;; compiling them would report failures that mean nothing.  A glob would also
-;; drag in emacs/lisp/themes, which wants `color-theme' -- abandoned upstream
-;; and deliberately not installed.
+;; Only the LOCAL PACKAGES are compiled, and they are DERIVED from the tree:
+;; every directory under emacs/lisp holding a compilable .el file, less the
+;; few named in `cp-excluded'.  emacs/lisp also holds flat configuration
+;; files, which are not packages -- they assume the whole fetched package set
+;; and a live session, so compiling them would report failures that mean
+;; nothing.  Those are excluded structurally, by scanning for directories.
+;; `emacs/lisp/themes' wants `color-theme', abandoned upstream and deliberately
+;; not installed, so it is named in `cp-excluded' with that reason.
+;;
+;; The list used to be written out by hand, and that is a hole rather than a
+;; style: a directory nobody added produced NO line of output -- not a compile,
+;; not a skip -- so the run read exactly like a clean build.  `commit-gate' was
+;; added on 2026-09-22 and would have gone uncompiled but for someone
+;; remembering.  Deriving the set closes it, and `cp-main' additionally asserts
+;; that every candidate directory ended up accounted for, so a future change
+;; that drops one fails instead of going quiet.
 ;;
 ;; A package whose dependency is absent is SKIPPED rather than failed, and the
 ;; missing library is named.  That is the difference between this running on the
@@ -37,10 +47,12 @@
                           (or load-file-name buffer-file-name)))
   "The dotfiles checkout this driver belongs to.")
 
-(defconst cp-packages
-  '("agenda-feeds" "term-launcher" "vterm-reconnect" "llm-api-key"
-    "commit-gate")
-  "Local package directories under emacs/lisp, relative to it.")
+(defconst cp-excluded
+  '(("themes" . "wants `color-theme', abandoned upstream and not installed"))
+  "Directories under emacs/lisp that are deliberately NOT compiled.
+Each entry is a directory name and the reason it is left out.  The reason is
+printed on every run: an exclusion nobody can see is the same hole as a
+package nobody listed.")
 
 (defun cp-lisp-dir ()
   "The emacs/lisp directory."
@@ -51,10 +63,34 @@
   (seq-remove (lambda (f) (string-match-p "-tests?\\.el\\'" f))
               (directory-files dir t "\\.el\\'")))
 
+(defun cp-candidate-dirs ()
+  "Every directory under emacs/lisp that holds a compilable .el file.
+Derived from the tree, never listed.  A directory omitted from a hand-written
+list produces no output at all -- neither a compile nor a skip -- so the run
+reads as clean and the package goes unchecked.
+
+A flat .el file directly under emacs/lisp is not a candidate, because it is
+configuration rather than a package.  That falls out of scanning for
+directories, so there is no second list to keep."
+  (let ((lisp (cp-lisp-dir)))
+    (sort (seq-filter
+           (lambda (name)
+             (let ((dir (expand-file-name name lisp)))
+               (and (file-directory-p dir)
+                    (cp-package-files dir)
+                    t)))
+           (directory-files lisp nil "\\`[^.]"))
+          #'string<)))
+
+(defun cp-packages ()
+  "The local packages to compile: every candidate that is not excluded."
+  (seq-remove (lambda (name) (assoc name cp-excluded))
+              (cp-candidate-dirs)))
+
 (defun cp-requires (files)
   "External libraries required by FILES, as symbols.
-Only top-level `(require 'foo)' forms are read, which is what a byte-compile
-actually needs resolved."
+Only top-level `(require \\='foo)' forms are read, which is what a
+byte-compile actually needs resolved."
   (let (out)
     (dolist (file files)
       (with-temp-buffer
@@ -74,12 +110,15 @@ the case the skip path exists for."
 
 (defun cp-main ()
   "Compile every local package, and exit non-zero if any failed."
-  (let ((lisp (cp-lisp-dir))
-        (compiled 0) (failed nil) (skipped nil))
+  (let* ((lisp (cp-lisp-dir))
+         (candidates (cp-candidate-dirs))
+         (packages (cp-packages))
+         (compiled 0) (failed nil) (skipped nil) (handled nil))
     (dolist (d (cp-elpaca-dirs)) (add-to-list 'load-path d))
-    (dolist (name cp-packages)
+    (dolist (name packages)
       (add-to-list 'load-path (expand-file-name name lisp)))
-    (dolist (name cp-packages)
+    (dolist (name packages)
+      (push name handled)
       (let* ((dir (expand-file-name name lisp))
              (files (and (file-directory-p dir) (cp-package-files dir))))
         (cond
@@ -115,16 +154,36 @@ the case the skip path exists for."
                           (push (file-name-nondirectory file) failed))))
                   (setq load-path (delete stage load-path))
                   (delete-directory stage t)))))))))
-    (princ (format "\ncompiled %d file(s)\n" compiled))
+    (princ (format "\ncompiled %d file(s) from %d package(s)\n"
+                   compiled (length packages)))
     (when skipped
       (princ "skipped:\n")
       (dolist (s (reverse skipped))
         (princ (format "  %-16s missing %s\n" (car s) (cdr s)))))
+    ;; Printed every run, even though it never changes, and under its own
+    ;; heading.  An exclusion that lives only in the source is invisible to
+    ;; whoever reads the output, and invisible is the property that made the
+    ;; hand-written list dangerous.  It is not a "skip": a skip is a missing
+    ;; dependency and may resolve, while this is a standing decision.
+    (when cp-excluded
+      (princ "excluded:\n")
+      (dolist (e cp-excluded)
+        (princ (format "  %-16s %s\n" (car e) (cdr e)))))
+    ;; The backstop.  Deriving the set means every candidate SHOULD be
+    ;; handled, so this can only fire on a future change that drops one --
+    ;; which is exactly the failure that has no other symptom.
+    (let ((unaccounted (seq-difference
+                        candidates
+                        (append handled (mapcar #'car cp-excluded)))))
+      (when unaccounted
+        (setq failed (append failed unaccounted))
+        (princ "UNACCOUNTED (neither compiled, skipped, nor excluded):\n")
+        (dolist (u unaccounted) (princ (format "  %s\n" u)))))
     (when failed
       (princ "FAILED:\n")
       (dolist (f (reverse failed)) (princ (format "  %s\n" f))))
     (kill-emacs (if failed 1 0))))
 
-(cp-main)
+(provide 'compile-packages)
 
 ;;; compile-packages.el ends here
