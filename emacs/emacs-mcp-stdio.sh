@@ -25,7 +25,7 @@
 # is installed only Mac-side.  It was previously an untracked hand-copy in
 # ~/.local/bin -- invisible to git and lost on any reinstall.
 #
-# LOCAL DELTA vs upstream: `timeout 60' on the three emacsclient calls
+# LOCAL DELTA 1 vs upstream: `timeout 60' on the three emacsclient calls
 # (INIT_CMD, the one in the read loop, and STOP_CMD).  Upstream has no timeout,
 # so if Emacs stops servicing its server socket every request blocks forever.
 # That happened on 2026-09-02: a dropped link left ssh subprocesses alive with
@@ -36,14 +36,32 @@
 # The script runs `set -eu -o pipefail', so a timeout exits the bridge instead
 # of parking it, and the client sees the server go away.  That is the point.
 #
-# Re-syncing: diff against the installed package, apply upstream, re-add the
-# three timeouts:
+# LOCAL DELTA 2 vs upstream: the reply is reassembled before it is decoded.
+# Upstream strips a pair of surrounding quotes and decodes what is left, which
+# corrupts every reply over 8 KB.  The Emacs server splits a long value into
+# several wire messages; emacsclient prints the first as the value and reports
+# each continuation as `*ERROR*: Unknown message: ', and it appends its `&n'
+# newline escape.  Neither is base64.  Measured 2026-09-22: the split is at
+# 8185 bytes, and `tools/list' for gaffer and prevue exceeded it while
+# gazette's did not -- so two of the three servers could not list their tools
+# at all, and the only visible symptom was "not connected".
+#
+# The order matters and each step is commented at the code below.  Filtering
+# straight to the base64 alphabet is the obvious fix and is WRONG in the worst
+# way: it keeps the marker's own letters, splices `ERRORUnknownmessage' into
+# the stream, and yields output that is correct up to the first chunk boundary
+# and garbage after it.
+#
+# Worth reporting upstream -- it is not specific to this setup.
+#
+# Re-syncing: diff against the installed package, apply upstream, then re-add
+# BOTH deltas -- the three timeouts and the reassembly:
 #   diff ~/.emacs.d/elpaca/sources/mcp-server-lib/emacs-mcp-stdio.sh \
 #        ~/lib/dotfiles/emacs/emacs-mcp-stdio.sh
 # A configurable EMACS_MCP_TIMEOUT is proposed upstream in issue #10:
 #   https://github.com/laurynas-biveinis/mcp-server-lib.el/issues/10
 # Check whether it landed before re-adding the timeouts by hand -- if it did,
-# drop this delta entirely and set the env var instead.
+# drop delta 1 entirely and set the env var instead.
 # ---------------------------------------------------------------------------
 
 set -eu -o pipefail
@@ -191,16 +209,66 @@ while read -r line; do
 
 	mcp_debug_log "BASE64-RESPONSE" "$base64_response"
 
-	# Handle the base64 response - first strip quotes if present
-	if [[ "$base64_response" == \"* && "$base64_response" == *\" ]]; then
-		# Remove the surrounding quotes
-		base64_response="${base64_response:1:${#base64_response}-2}"
-		# Unescape any quotes inside
-		base64_response="${base64_response//\\\"/\"}"
+	# Rejoin a reply that emacsclient split into chunks.
+	#
+	# The Emacs server sends a value longer than 8 KB as several wire
+	# messages.  emacsclient prints the first as the value and does not
+	# recognise the rest, so each continuation arrives on its own line as
+	# `*ERROR*: Unknown message: ' followed by more of the value.  Measured on
+	# this Emacs: the split is at 8185 bytes, and a 14975-byte reply comes
+	# back as 8185 bytes, a newline, that marker, and the remaining 6764.
+	#
+	# Deleting the marker is what puts the value back together, and it has to
+	# happen before anything else looks at the string.  Filtering to the
+	# base64 alphabet instead keeps the marker's OWN letters and splices
+	# `ERRORUnknownmessage' into the stream, so the decode yields correct
+	# output up to the first chunk boundary and garbage after it -- worse than
+	# failing, because it looks like it worked.
+	raw_response="$base64_response"
+	base64_response="${base64_response//$'\n'\*ERROR\*: Unknown message: /}"
+
+	# A `*ERROR*' still here is a real one from Emacs, not a chunk boundary.
+	# Say so rather than filtering it into something that decodes to nonsense;
+	# the only visible symptom otherwise is "not connected".
+	if [[ "$base64_response" == *'*ERROR*'* ]]; then
+		mcp_debug_log "EMACS-ERROR" "$raw_response"
+		continue
 	fi
 
-	# Decode the base64 content
-	formatted_response=$(echo -n "$base64_response" | base64 -d)
+	# Drop emacsclient's `&' escapes, BOTH characters of each.
+	#
+	# It appends `&n' -- its escape for a newline -- after the closing quote
+	# of a chunked reply.  Removing these by alphabet does not work and fails
+	# in the worst way: `n' IS a base64 character, so the filter below takes
+	# the `&' and leaves the `n' behind, the length goes to 1 mod 4, and
+	# `base64 -d' rejects a string that is otherwise entirely correct.
+	# Measured: 14945 characters, mod 4 == 1, decoding 11208 good bytes and
+	# still exiting 1.
+	#
+	# `&' never occurs in base64, so every one of them starts a two-character
+	# escape and this is safe for any escape emacsclient invents, not just
+	# `&n'.
+	while [[ "$base64_response" == *'&'* ]]; do
+		escape_tail="${base64_response#*&}"
+		base64_response="${base64_response%%&*}${escape_tail:1}"
+	done
+
+	# Now reduce to the base64 alphabet, which drops the surrounding quotes.
+	base64_response="${base64_response//[^A-Za-z0-9+\/=]/}"
+
+	# A length that is not a multiple of 4 means something was removed that
+	# should not have been, or something remains that should not.  base64
+	# reports only "invalid input", so say which.
+	if (( ${#base64_response} % 4 != 0 )); then
+		mcp_debug_log "BAD-LENGTH" \
+			"${#base64_response} chars, $(( ${#base64_response} % 4 )) mod 4"
+	fi
+
+	# Decode the base64 content.
+	if ! formatted_response=$(printf '%s' "$base64_response" | base64 -d 2>/dev/null); then
+		mcp_debug_log "DECODE-FAILED" "$raw_response"
+		formatted_response=""
+	fi
 
 	mcp_debug_log "RESPONSE" "$formatted_response"
 
