@@ -38,7 +38,8 @@
   "The dotfiles checkout this driver belongs to.")
 
 (defconst cp-packages
-  '("agenda-feeds" "term-launcher" "vterm-reconnect" "llm-api-key")
+  '("agenda-feeds" "term-launcher" "vterm-reconnect" "llm-api-key"
+    "commit-gate")
   "Local package directories under emacs/lisp, relative to it.")
 
 (defun cp-lisp-dir ()
