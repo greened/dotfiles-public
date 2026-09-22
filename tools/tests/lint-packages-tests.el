@@ -124,6 +124,61 @@
                                    "(use-package other-no-such-library)")
                  '(no-such-library-xyzzy other-no-such-library))))
 
+;;; A directive whose VALUE is a false claim
+
+;; `:ensure nil' and `:elpaca nil' say the library is there already.  A stanza
+;; naming a package that is nowhere is making a claim, not giving an
+;; instruction, so the claim has to hold.  `bbdb' and `cask' both carried a
+;; false one in this repository.
+
+(ert-deftest lp-rejects-a-false-ensure-nil ()
+  "Nothing is ordered, and the library is resolvable nowhere."
+  (should (equal (lp-t--violations "(use-package no-such-library-xyzzy"
+                                   "  :ensure nil)")
+                 '(no-such-library-xyzzy))))
+
+(ert-deftest lp-rejects-a-false-elpaca-nil ()
+  "The older spelling makes the same claim, so it gets the same check."
+  (should (equal (lp-t--violations "(use-package no-such-library-xyzzy"
+                                   "  :elpaca nil)")
+                 '(no-such-library-xyzzy))))
+
+(ert-deftest lp-rejects-disabled-nil ()
+  "`:disabled nil' says the stanza is live, so it still declares nothing."
+  (should (equal (lp-t--violations "(use-package no-such-library-xyzzy"
+                                   "  :disabled nil)")
+                 '(no-such-library-xyzzy))))
+
+(ert-deftest lp-accepts-ensure-nil-on-a-vendored-library ()
+  "The claim holds: the file is vendored here and on the load path."
+  (should (equal (lp-t--violations "(use-package llvm-mode"
+                                   "  :ensure nil)")
+                 nil)))
+
+(ert-deftest lp-accepts-ensure-nil-on-the-emacs-pseudo-package ()
+  "There is no library called `emacs', so the claim cannot be checked."
+  (should (equal (lp-t--violations "(use-package emacs"
+                                   "  :ensure nil)")
+                 nil)))
+
+(ert-deftest lp-accepts-ensure-t-on-a-library-that-is-nowhere ()
+  "`:ensure t' is an instruction to fetch, so there is nothing to verify."
+  (should (equal (lp-t--violations "(use-package no-such-library-xyzzy"
+                                   "  :ensure t)")
+                 nil)))
+
+(ert-deftest lp-reads-a-value-after-a-config-body ()
+  "`:config' takes SEVERAL forms, so the pairs `plist-get' assumes are gone.
+The value has to be read as the element after the keyword instead."
+  (should (equal (lp-t--violations "(use-package no-such-library-xyzzy"
+                                   "  :config (setq a 1) (setq b 2)"
+                                   "  :ensure nil)")
+                 '(no-such-library-xyzzy)))
+  (should (equal (lp-t--violations "(use-package no-such-library-xyzzy"
+                                   "  :config (setq a 1) (setq b 2)"
+                                   "  :ensure t)")
+                 nil)))
+
 ;;; What the parse has to survive
 
 (ert-deftest lp-ignores-a-commented-out-stanza ()

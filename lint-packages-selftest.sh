@@ -86,6 +86,25 @@ else
   fail=$((fail + 1)); printf 'FAIL the report does not name the stanza\n'
 fi
 
+# The other fault: a directive is present and its value is false.  `bbdb' and
+# `cask' both carried `:ensure nil' on a package nothing installed, so this is
+# the shape that actually occurred rather than an invented one.  The two faults
+# get different wording, and the wording is what sends a reader to the right
+# part of the file, so it is asserted too.
+claim="$tmp/claim.el"
+cat >"$claim" <<'EOF'
+(use-package no-such-library-xyzzy
+  :ensure nil
+  :defer t)
+EOF
+check 1 'a false `:ensure nil` fails the lint' lint "$claim"
+report="$(lint "$claim" 2>&1)"
+if printf '%s\n' "$report" | grep -q "claim\.el:1:.*says .:ensure nil"; then
+  pass=$((pass + 1)); printf 'ok   the report says which claim is false\n'
+else
+  fail=$((fail + 1)); printf 'FAIL the report does not name the false claim\n%s\n' "$report"
+fi
+
 # The checkout's own file.  Its summary is printed, since the stanza count is
 # what moves when a package is added.
 out="$(lint "$here/emacs/lisp/packages.el" 2>&1)"; rc=$?

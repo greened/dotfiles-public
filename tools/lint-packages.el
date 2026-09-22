@@ -19,13 +19,19 @@
 ;; A stanza carrying none of those is never ordered, and a deferred one then
 ;; fails at the moment of use rather than at startup.
 ;;
+;; A declaration is read for its VALUE, not merely its presence.  A non-nil
+;; value is an instruction -- fetch this, or expand to nothing -- and is taken
+;; at its word.  A nil value is a claim about what is already there, and a claim
+;; is checked: `:ensure nil' on a package that is neither built in nor vendored
+;; here is a lie, and nothing installs it.  `bbdb' and `cask' both carried one.
+;;
 ;; Two things here that a regex over the same text gets wrong.  Each stanza is
 ;; parsed with `read' and classified by the keywords at the top level of its
 ;; argument list, so an explicit recipe counts and a nested stanza's own
-;; `:ensure' does not vouch for its parent.  And a stanza that declares nothing
-;; is excused only when `locate-library' finds it: under `emacs -Q --batch' the
-;; load path holds the built-in libraries and none of the fetched ones, which is
-;; the distinction wanted.  `lp-add-load-path' adds the checkout's own elisp
+;; `:ensure' does not vouch for its parent.  And an unvouched stanza is excused
+;; only when `locate-library' finds it: under `emacs -Q --batch' the load path
+;; holds the built-in libraries and none of the fetched ones, which is the
+;; distinction wanted.  `lp-add-load-path' adds the checkout's own elisp
 ;; directories, so vendoring a new file needs no change here.
 
 ;;; Code:
@@ -92,12 +98,28 @@ one of these too.  One inside a comment or a string is not."
             (goto-char end)))))
     (nreverse out)))
 
-(defun lp-declares-p (form)
-  "Whether FORM carries one of `lp-declarations'.
-Only the keywords at the top level of the argument list count, so a stanza
-nested in another one's `:config' does not vouch for its parent."
+(defun lp-directives (form)
+  "Each of `lp-declarations' that FORM carries, as a keyword and its value.
+Only a keyword at the top level of the argument list counts, so a stanza
+nested in another one's `:config' does not vouch for its parent.
+
+The value is the element after the keyword, rather than what `plist-get'
+would pair it with.  `:config' takes SEVERAL forms, so the argument list is
+not reliably a plist and `plist-get' reads the wrong element after one."
   (let ((args (cddr form)))
-    (and (seq-some (lambda (keyword) (memq keyword args)) lp-declarations) t)))
+    (delq nil
+          (mapcar (lambda (keyword)
+                    (let ((tail (memq keyword args)))
+                      (and tail (cons keyword (cadr tail)))))
+                  lp-declarations))))
+
+(defun lp-instructs-p (form)
+  "Whether FORM carries a declaration whose value is non-nil.
+Such a value is an INSTRUCTION -- fetch this package, or expand to nothing --
+and it is taken at its word.  A nil value is a CLAIM instead: `:ensure nil'
+and `:elpaca nil' say the library needs no fetching, and `:disabled nil' says
+the stanza is live.  A claim is checked rather than believed."
+  (and (seq-some #'cdr (lp-directives form)) t))
 
 (defun lp-resolvable-p (name)
   "Whether NAME is a library this Emacs can load without fetching it."
@@ -106,9 +128,22 @@ nested in another one's `:config' does not vouch for its parent."
 (defun lp-stanza-ok-p (stanza)
   "Whether STANZA says what is to happen about fetching its package."
   (let ((name (plist-get stanza :name)))
-    (or (lp-declares-p (plist-get stanza :form))
+    (or (lp-instructs-p (plist-get stanza :form))
         (and (memq name lp-pseudo-packages) t)
         (lp-resolvable-p name))))
+
+(defun lp-complaint (stanza)
+  "Why STANZA is a violation, as a phrase to follow its name.
+A stanza that declares nothing and one that declares something false are
+different faults, and naming them the same way sends the reader to the wrong
+part of the file."
+  (let ((claim (seq-find (lambda (directive) (null (cdr directive)))
+                         (lp-directives (plist-get stanza :form)))))
+    (if claim
+        (format "says `%s nil', and the library is not available"
+                (car claim))
+      (format "carries no %s, and is not already available"
+              (mapconcat #'symbol-name lp-declarations " or ")))))
 
 (defun lp-violations ()
   "The stanzas in the current buffer that declare nothing."
@@ -125,9 +160,9 @@ FILE defaults to the checkout's own packages.el."
       (setq stanzas (lp-stanzas))
       (setq bad (seq-remove #'lp-stanza-ok-p stanzas)))
     (dolist (stanza bad)
-      (princ (format "%s:%d: %s carries no %s, and is not already available\n"
+      (princ (format "%s:%d: %s %s\n"
                      file (plist-get stanza :line) (plist-get stanza :name)
-                     (mapconcat #'symbol-name lp-declarations " or "))))
+                     (lp-complaint stanza))))
     (princ (format "%s: %d stanza(s), %d undeclared\n"
                    (file-name-nondirectory file) (length stanzas) (length bad)))
     (kill-emacs (if bad 1 0))))
