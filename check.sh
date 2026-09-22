@@ -35,6 +35,9 @@ do_test() {
   echo "== test: link guard"
   "$here/link-selftest.sh"
   echo
+  echo "== test: packages.el declares :ensure everywhere"
+  EMACS="$emacs" "$here/lint-packages-selftest.sh"
+  echo
   echo "== test: agenda-feeds iCalendar reader"
   EMACS="$emacs" "$here/emacs/lisp/agenda-feeds/check.sh"
 }
