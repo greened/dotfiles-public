@@ -48,6 +48,15 @@ do_test() {
   echo
   echo "== test: agenda-feeds iCalendar reader"
   EMACS="$emacs" "$here/emacs/lisp/agenda-feeds/check.sh"
+  echo
+  echo "== test: llm-api-key pass-entry resolution"
+  EMACS="$emacs" "$here/emacs/lisp/llm-api-key/check.sh"
+  echo
+  echo "== test: term-launcher targets and key bindings"
+  EMACS="$emacs" "$here/emacs/lisp/term-launcher/check.sh"
+  echo
+  echo "== test: emacsclient.py command line"
+  "$here/emacs/check.sh"
 }
 
 case "$what" in
