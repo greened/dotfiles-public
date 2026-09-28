@@ -1234,12 +1234,25 @@ Emacs started."
 ;; removing it disarms every future gate on this machine, and it fails
 ;; silently, because the next agent then refuses a real approval -- which looks
 ;; exactly like the gate working.
+;; The scrub indicator is a second, independent job: a hook may rewrite a
+;; commit message through an automated slop filter before the gate opens, and
+;; the mode line is where that gets said. It lives in its own file so the
+;; accept recorder stays about recording an approval alone, and it is armed
+;; here because both halves are wanted on every gate this machine shows.
 (use-package commit-gate
   :ensure nil
   :after server
   :load-path (lambda () (list (expand-file-name "lisp/commit-gate" emacs-root)))
   :config
-  (commit-gate-arm))
+  (commit-gate-arm)
+  ;; The directory is added again here rather than trusted to `:load-path'.
+  ;; In a running image this package's directory is the only vendored one
+  ;; missing from `load-path', and the ones that are there differ from it only
+  ;; in using `:demand t' where this uses `:after server'. Whatever drops it,
+  ;; the sibling below has to load without it, and `add-to-list' is idempotent.
+  (add-to-list 'load-path (expand-file-name "lisp/commit-gate" emacs-root))
+  (require 'commit-gate-scrub)
+  (commit-gate-scrub-install))
 
 (use-package font-lock
   :ensure nil
