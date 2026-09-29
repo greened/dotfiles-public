@@ -1326,9 +1326,18 @@ end tell
 ;;       "end tell")
 ;;     "\n")))
 
+;; Pick on `system-type', not `window-system'. Under a daemon the init runs
+;; before any frame exists, so `window-system' is nil whatever this machine
+;; displays on, and the mac branch was skipped on every daemon start. That
+;; left this set to a w3m entry point that is not defined here, so browsing
+;; failed. `system-type' is fixed at build time and reads the same from a
+;; daemon or a frame.
 (cond
- ((memq window-system '(mac ns))
+ ((eq system-type 'darwin)
   (setq browse-url-browser-function 'browse-url-mac-chrome))
+ ((eq system-type 'gnu/linux)
+  ;; `browse-url-chrome-program' picks the binary and defaults to "chromium".
+  (setq browse-url-browser-function 'browse-url-chrome))
  (t
   (setq browse-url-browser-function 'w3m-browse-url))))
 
