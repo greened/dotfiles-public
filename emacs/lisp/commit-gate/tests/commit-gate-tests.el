@@ -350,6 +350,36 @@ returned is a synchronous one."
             (should (commit-gate-accepted-p gate)))
         (delete-process proc)))))
 
+;;; A name that nearly matches
+
+(ert-deftest commit-gate-flags-a-near-miss ()
+  "A suffix on the name is the case that once lost every approval."
+  (commit-gate-t--with-name "/tmp/x/.git/CLAUDE_COMMIT_MSG.txt"
+    (should (commit-gate-misnamed-p))))
+
+(ert-deftest commit-gate-does-not-flag-a-gate-or-a-stranger ()
+  "The real gate is not a near miss, and neither is an unrelated file."
+  (commit-gate-t--with-name "/tmp/x/.git/CLAUDE_COMMIT_MSG"
+    (should-not (commit-gate-misnamed-p)))
+  (commit-gate-t--with-name "/tmp/x/.git/COMMIT_EDITMSG"
+    (should-not (commit-gate-misnamed-p)))
+  (with-temp-buffer
+    (should-not (commit-gate-misnamed-p))))
+
+(ert-deftest commit-gate-warns-in-the-header-of-a-near-miss ()
+  "The warning has to be where he looks before he presses `C-x #'."
+  (commit-gate-t--with-name "/tmp/x/.git/CLAUDE_COMMIT_MSG.txt"
+    (let ((inhibit-message t))
+      (commit-gate-warn-if-misnamed))
+    (should (stringp header-line-format))
+    (should (string-match-p "records no approval" header-line-format))))
+
+(ert-deftest commit-gate-leaves-a-real-gate-header-alone ()
+  "A warning on every gate would be one he learns to ignore."
+  (commit-gate-t--with-name "/tmp/x/.git/CLAUDE_COMMIT_MSG"
+    (commit-gate-warn-if-misnamed)
+    (should-not (local-variable-p 'header-line-format))))
+
 ;;; Arming it
 
 (ert-deftest commit-gate-arms-and-reports-itself ()
@@ -377,5 +407,16 @@ twice and make the count meaningless. Measured rather than assumed."
                        'server-done)
           (should (equal n 1))))
     (advice-remove 'server-done #'commit-gate-record-accept)))
+
+(ert-deftest commit-gate-arming-installs-the-near-miss-warning ()
+  "Once, however often the configuration is reloaded."
+  (let ((server-visit-hook nil))
+    (unwind-protect
+        (progn
+          (commit-gate-arm)
+          (commit-gate-arm)
+          (should (equal server-visit-hook
+                         '(commit-gate-warn-if-misnamed))))
+      (advice-remove 'server-done #'commit-gate-record-accept))))
 
 ;;; commit-gate-tests.el ends here

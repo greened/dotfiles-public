@@ -64,6 +64,11 @@
 ;; advice on `server-done' would break finishing a buffer for every client. So
 ;; a reader that finds no record has to ask a person rather than read a
 ;; refusal. A missing record means UNPROVEN, and it does not mean denied.
+;;
+;; A near miss is said out loud. A client that parks on CLAUDE_COMMIT_MSG.txt
+;; gets a buffer that looks like a gate and records nothing, so every approval
+;; there reads as a dismissal. The header line of that buffer says so while he
+;; can still act on it.
 
 ;;; Code:
 
@@ -98,6 +103,27 @@ worktree's gate shares one basename."
     (and file
          (equal (file-name-nondirectory file) commit-gate-file-name)
          t)))
+
+(defun commit-gate-misnamed-p (&optional buffer)
+  "Whether BUFFER, or the current buffer, is named like a gate but is not one.
+That is a file whose name starts with `commit-gate-file-name' and is not
+exactly it. `C-x #' on such a buffer records no approval."
+  (let ((file (buffer-file-name buffer)))
+    (and file
+         (let ((name (file-name-nondirectory file)))
+           (and (string-prefix-p commit-gate-file-name name)
+                (not (equal name commit-gate-file-name))))
+         t)))
+
+(defun commit-gate-warn-if-misnamed ()
+  "Say in the header line that `C-x #' here records no approval.
+Does nothing unless the current buffer is `commit-gate-misnamed-p'. Written
+for `server-visit-hook', because the harm needs a client that waits."
+  (when (commit-gate-misnamed-p)
+    (let ((text (format "Not a commit gate. C-x # records no approval, \
+because the file is not named %s." commit-gate-file-name)))
+      (setq-local header-line-format (propertize text 'face 'warning))
+      (message "%s" text))))
 
 (defun commit-gate--sentinel-for (file)
   "The sentinel path for the gate at FILE."
@@ -224,10 +250,11 @@ A nil result means UNPROVEN. It does not mean the message was refused."
   (and (advice-member-p #'commit-gate-record-accept 'server-done) t))
 
 (defun commit-gate-arm ()
-  "Install the accept recorder on `server-done'.
+  "Install the accept recorder on `server-done', and the near-miss warning.
 Adding the same function twice does not stack a second copy, so this is safe
 to re-run when the configuration is reloaded."
-  (advice-add 'server-done :before #'commit-gate-record-accept))
+  (advice-add 'server-done :before #'commit-gate-record-accept)
+  (add-hook 'server-visit-hook #'commit-gate-warn-if-misnamed))
 
 (provide 'commit-gate)
 
