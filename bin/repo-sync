@@ -43,6 +43,7 @@ Exit status: 0 clean, 1 questions for a human, 2 error.
 
 import argparse
 import base64
+import binascii
 import fcntl
 import fnmatch
 import gzip
@@ -69,6 +70,11 @@ GIT_TIMEOUT = 60
 GATE_TIMEOUT = 30
 HOOK_TIMEOUT = 240
 EVAL_TIMEOUT = 10
+# emacsclient garbles an -e reply past a few kilobytes, so no eval may return
+# more than this. A result comes back in slices under it.
+REPLY_LIMIT = 4000
+SLICE = REPLY_LIMIT - 2
+MAX_RESULT_B64 = 8 << 20
 JOB_DEADLINE = 300
 POLL_INTERVAL = 2
 FETCH_PARALLEL = 4
@@ -826,7 +832,16 @@ def poll_form(tag):
           '(t (with-temp-buffer (set-buffer-multibyte nil) '
           '(insert-file-contents-literally (concat d "result.json.gz")) '
           '(base64-encode-region (point-min) (point-max) t) '
-          '(buffer-string)))))' % d)
+          '(format "DONE %%d" (- (point-max) (point-min)))))))' % d)
+
+
+def slice_form(tag, start, end):
+  """One slice of the base64 of a job result, read from the file."""
+  return ('(with-temp-buffer (set-buffer-multibyte nil) '
+          '(insert-file-contents-literally %s) '
+          '(base64-encode-region (point-min) (point-max) t) '
+          '(let ((s (buffer-string))) (substring s %d (min %d (length s)))))'
+          % (elisp_string('/tmp/repo-sync-%s/result.json.gz' % tag), start, end))
 
 
 def cleanup_form(tag):
@@ -873,6 +888,8 @@ class EmacsTransport:
       raise TransportError('BUSY', self.dead)
     if not r.ok:
       raise TransportError('UNREACHABLE', 'emacsclient failed: ' + last_line(r))
+    if len(r.out.rstrip('\n')) > REPLY_LIMIT:
+      raise Error('an Emacs reply was over the %d character bound' % REPLY_LIMIT)
     return parse_lisp_string(r.out)
 
   def preflight(self):
@@ -909,9 +926,33 @@ class EmacsTransport:
       raise Error('mac job %s wrote no result (rc %s). See '
                   '/tmp/repo-sync-%s/agent.log on the mac'
                   % (tag, clean(out[len('NORESULT'):].strip(), 20), tag))
-    if not B64_RE.match(out):
-      raise Error('mac job %s returned something that is not base64' % tag)
-    data = decode_result(base64.b64decode(out))
+    m = re.match(r'^DONE (\d+)$', out)
+    if not m:
+      raise Error('mac job %s answered the poll with something unexpected' % tag)
+    n = int(m.group(1))
+    if n > MAX_RESULT_B64:
+      raise Error('mac job %s result is over the size cap' % tag)
+    parts = []
+    for start in range(0, n, SLICE):
+      try:
+        part = self._eval(slice_form(tag, start, start + SLICE))
+      except TransportError as e:
+        raise TransportError(e.state, 'mac job %s: the read stopped after %d '
+                             'of %d slices, and /tmp/repo-sync-%s is left on '
+                             'the mac. %s' % (tag, len(parts),
+                                              -(-n // SLICE), tag, e))
+      if not B64_RE.match(part) or len(part) > SLICE:
+        raise Error('mac job %s returned a slice that is not base64' % tag)
+      parts.append(part)
+    b64 = ''.join(parts)
+    if len(b64) != n:
+      raise Error('mac job %s result is %d characters, not %d'
+                  % (tag, len(b64), n))
+    try:
+      raw = base64.b64decode(b64, validate=True)
+    except binascii.Error as e:
+      raise Error('mac job %s result is not base64: %s' % (tag, e))
+    data = decode_result(raw)
     self._eval(cleanup_form(tag))
     return data
 

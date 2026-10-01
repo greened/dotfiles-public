@@ -982,19 +982,56 @@ class Config(unittest.TestCase):
                      ['b', 'a'])
 
 
-class FakeEmacs:
-  """Answers evals from a script of replies, and records every eval."""
+# What the real socket appends to a long emacsclient -e reply.
+GARBLE = '\n*ERROR*: Unknown message: "&n'
 
-  def __init__(self, replies):
+
+def garbled(reply):
+  """A reply as the real socket returns it, defect included."""
+  return reply + (GARBLE if len(reply) > 8000 else '') + '\n'
+
+
+SLICE_RE = re.compile(r'\(substring s (\d+) \(min (\d+) \(length s\)\)\)')
+
+
+class FakeEmacs:
+  """Answers evals from a script of replies, and records every eval.
+
+  Once the script reaches 'RESULT', it serves the poll and slice forms of a
+  finished job from `result`. A reply 'TIMEOUT' times out, and `timeout_at`
+  times out that numbered slice.
+  """
+
+  def __init__(self, replies, result=None, timeout_at=None):
     self.replies = list(replies)
+    self.result = result
+    self.timeout_at = timeout_at
     self.forms = []
+    self.slices = 0
 
   def __call__(self, form):
     self.forms.append(form)
+    m = SLICE_RE.search(form)
+    if m:
+      self.slices += 1
+      if self.slices == self.timeout_at:
+        return rs.Result(None, '', '', timed_out=True)
+      start, end = int(m.group(1)), int(m.group(2))
+      return rs.Result(0, garbled('"%s"' % self.result[start:end]), '')
     reply = self.replies.pop(0)
     if reply == 'TIMEOUT':
       return rs.Result(None, '', '', timed_out=True)
-    return rs.Result(0, reply + '\n', '')
+    if reply == 'RESULT':
+      if 'file-exists-p' in form:
+        self.replies.insert(0, 'RESULT')
+        return rs.Result(0, garbled('"DONE %d"' % len(self.result)), '')
+      reply = '"ok"'
+    return rs.Result(0, garbled(reply), '')
+
+
+def result_b64(data):
+  body = {'ok': True, 'version': rs.VERSION, 'data': data}
+  return base64.b64encode(gzip.compress(json.dumps(body).encode())).decode()
 
 
 class Transport(unittest.TestCase):
@@ -1013,18 +1050,82 @@ class Transport(unittest.TestCase):
 
   def test_20_pending_then_done_decodes_exactly(self):
     data = {'x': [1, 'two', None], 'subject': 'café'}
-    body = {'ok': True, 'version': rs.VERSION, 'data': data}
-    b64 = base64.b64encode(gzip.compress(json.dumps(body).encode())).decode()
-    emacs = FakeEmacs(['t', '"started"', '"PENDING"', '"%s"' % b64, '"ok"'])
+    emacs = FakeEmacs(['t', '"started"', '"PENDING"', 'RESULT'],
+                      result=result_b64(data))
     t = self.transport(emacs)
     self.assertEqual(t.run_job('inventory', {'k': 1}), data)
-    self.assertEqual(len(emacs.forms), 5)
     self.assertEqual(self.sleeps, [rs.POLL_INTERVAL])
     self.assertIn('start-process', emacs.forms[1])
-    self.assertIn('delete-directory', emacs.forms[4])
+    self.assertEqual(emacs.slices, 1)
+    self.assertIn('delete-directory', emacs.forms[-1])
     tag = re.search(r'repo-sync-([0-9a-f]{16})', emacs.forms[1]).group(1)
     with open(os.path.join(self.state, 'jobs', tag + '-inventory.json')) as f:
       self.assertEqual(json.load(f), {'k': 1})
+
+  def big_result(self):
+    # Random bytes do not compress, so the base64 stays large.
+    data = {'blob': base64.b64encode(os.urandom(96 << 10)).decode()}
+    b64 = result_b64(data)
+    self.assertGreater(len(b64), 120 << 10)
+    return data, b64
+
+  def test_20_a_large_result_round_trips_in_bounded_slices(self):
+    data, b64 = self.big_result()
+    emacs = FakeEmacs(['t', '"started"', 'RESULT'], result=b64)
+    t = self.transport(emacs)
+    self.assertEqual(t.run_job('inventory', {}), data)
+    self.assertEqual(emacs.slices, -(-len(b64) // rs.SLICE))
+    self.assertIn('delete-directory', emacs.forms[-1])
+
+  def test_20_a_timeout_partway_through_the_slices_stops_the_run(self):
+    _, b64 = self.big_result()
+    emacs = FakeEmacs(['t', '"started"', 'RESULT'], result=b64, timeout_at=5)
+    t = self.transport(emacs)
+    with self.assertRaises(rs.TransportError) as cm:
+      t.run_job('inventory', {})
+    self.assertEqual(cm.exception.state, 'BUSY')
+    self.assertRegex(str(cm.exception), 'job [0-9a-f]{16}: the read stopped '
+                     'after 4 of')
+    self.assertEqual(emacs.slices, 5)
+    self.assertFalse(any('delete-directory' in f for f in emacs.forms))
+    n = len(emacs.forms)
+    with self.assertRaises(rs.TransportError):
+      t.run_job('inventory', {})
+    self.assertEqual(len(emacs.forms), n)
+
+  def test_20_a_result_shorter_than_announced_is_refused(self):
+    _, b64 = self.big_result()
+    emacs = FakeEmacs(['t', '"started"', 'RESULT'], result=b64)
+    real = emacs.__call__
+
+    def short(form):
+      r = real(form)
+      if r.out.startswith('"DONE '):
+        return rs.Result(0, '"DONE %d"\n' % (len(b64) + 10), '')
+      return r
+    t = self.transport(short)
+    with self.assertRaisesRegex(rs.Error, 'characters, not'):
+      t.run_job('inventory', {})
+
+  def test_20_a_slice_that_is_not_base64_is_refused(self):
+    emacs = FakeEmacs(['t', '"started"', 'RESULT'], result='AAAA*AAA')
+    t = self.transport(emacs)
+    with self.assertRaisesRegex(rs.Error, 'not base64'):
+      t.run_job('inventory', {})
+
+  def test_20_padding_inside_the_result_is_an_error_not_a_crash(self):
+    for result in ('AAA=BBBB', 'AAAA=AAA'):
+      with self.subTest(result=result):
+        emacs = FakeEmacs(['t', '"started"', 'RESULT'], result=result)
+        t = self.transport(emacs)
+        with self.assertRaisesRegex(rs.Error, 'not base64'):
+          t.run_job('inventory', {})
+
+  def test_20_a_reply_over_the_bound_is_refused(self):
+    emacs = FakeEmacs(['t', '"started"', '"%s"' % ('A' * 9000)])
+    t = self.transport(emacs)
+    with self.assertRaisesRegex(rs.Error, 'over the 4000 character bound'):
+      t.run_job('inventory', {})
 
   def test_20_timeout_on_the_first_eval_makes_no_second_eval(self):
     emacs = FakeEmacs(['TIMEOUT', 't'])
@@ -1081,18 +1182,25 @@ class ShellEmacs:
           ['/bin/sh', '-c', rs.parse_lisp_string(m.group(1))], cwd='/tmp',
           start_new_session=True))
       return rs.Result(0, '"started"\n', '')
-    m = re.search(r'"(/tmp/repo-sync-[0-9a-f]{16}/)"', form)
+    m = re.search(r'"(/tmp/repo-sync-[0-9a-f]{16}/)', form)
     d = m.group(1)
     if 'delete-directory' in form:
       shutil.rmtree(d)
       return rs.Result(0, '"ok"\n', '')
+    m = SLICE_RE.search(form)
+    if m:
+      with open(d + 'result.json.gz', 'rb') as f:
+        b64 = base64.b64encode(f.read()).decode()
+      return rs.Result(0, garbled('"%s"' % b64[int(m.group(1)):
+                                              int(m.group(2))]), '')
     if not os.path.exists(d + 'rc'):
       return rs.Result(0, '"PENDING"\n', '')
     if not os.path.exists(d + 'result.json.gz'):
       with open(d + 'rc') as f:
         return rs.Result(0, '"NORESULT %s"\n' % f.read().strip(), '')
     with open(d + 'result.json.gz', 'rb') as f:
-      return rs.Result(0, '"%s"\n' % base64.b64encode(f.read()).decode(), '')
+      n = len(base64.b64encode(f.read()))
+    return rs.Result(0, '"DONE %d"\n' % n, '')
 
 
 class LaunchScript(unittest.TestCase):
