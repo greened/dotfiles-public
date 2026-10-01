@@ -471,19 +471,63 @@ class Decide(unittest.TestCase):
     mac['includes'] = []
     self.assertEqual(len(rs.identity_rows(vm, mac, cfg)), 1)
 
-  def test_16_tip_moved_after_the_report_refuses(self):
-    self.w.commit(self.w.vm, 'vm work')
+  def mac_behind(self):
+    """Push vm work, so the report has an AUTO row for the mac."""
+    new = self.w.commit(self.w.vm, 'vm work')
     git('push', '-q', 'origin', 'main', cwd=self.w.vm)
-    before = self.w.tip(self.w.mac)
-    self.w.report()
-    self.w.commit(self.w.seed, 'late')
-    git('pull', '-q', '--rebase', cwd=self.w.seed)
+    _, rows = self.w.report()
+    self.assertEqual([r['machine'] for r in kinds(rows, 'AUTO', 'main')],
+                     ['mac'])
+    return new
+
+  def origin_forward(self):
+    git('pull', '-q', '--ff-only', cwd=self.w.seed)
+    late = self.w.commit(self.w.seed, 'late')
     git('push', '-q', 'origin', 'main', cwd=self.w.seed)
+    return late
+
+  def test_16_origin_moved_forward_still_lands_on_the_reported_tip(self):
+    new = self.mac_behind()
+    late = self.origin_forward()
+    code, out = self.w.apply()
+    self.assertEqual(code, 0, out)
+    self.assertEqual(self.w.tip(self.w.mac), new)
+    self.assertNotEqual(self.w.tip(self.w.mac), late)
+    self.assertEqual([r['text'] for r in kinds(out, 'DONE')],
+                     ['fast-forwarded to the reported tip, origin has moved on'])
+
+  def test_16b_rewritten_origin_refuses(self):
+    self.mac_behind()
+    before = self.w.tip(self.w.mac)
+    git('checkout', '-q', '--orphan', 'other', cwd=self.w.seed)
+    self.w.commit(self.w.seed, 'unrelated')
+    git('push', '-q', '-f', 'origin', 'other:main', cwd=self.w.seed)
     code, out = self.w.apply()
     self.assertEqual(code, 1)
     self.assertEqual([r['text'] for r in kinds(out, 'REFUSED')],
                      ['changed since the report'])
     self.assertEqual(self.w.tip(self.w.mac), before)
+
+  def test_16c_moving_side_tip_changed_refuses_even_with_origin_ahead(self):
+    self.mac_behind()
+    self.origin_forward()
+    local = self.w.commit(self.w.mac, 'mac local')
+    code, out = self.w.apply()
+    self.assertEqual(code, 1)
+    self.assertEqual([r['text'] for r in kinds(out, 'REFUSED')],
+                     ['changed since the report'])
+    self.assertEqual(self.w.tip(self.w.mac), local)
+
+  def test_16d_ask_push_stays_strict_when_origin_moved_forward(self):
+    self.w.commit(self.w.vm, 'unpushed')
+    extra = self.w.allow()
+    _, rows = self.w.report(extra)
+    late = self.origin_forward()
+    code, out = self.w.apply(extra, push=[kinds(rows, 'ASK-PUSH')[0]['id']])
+    self.assertEqual(code, 1)
+    self.assertEqual([r['text'] for r in kinds(out, 'REFUSED')],
+                     ['changed since the report'])
+    self.assertEqual(self.w.origin_tip(), late)
 
   def test_17_refusing_gates_refuse_the_push(self):
     cases = {

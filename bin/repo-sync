@@ -1592,6 +1592,13 @@ class Driver:
         return 'gate %s denied: %s' % (g, clean(str(why), 200))
     return None
 
+  def descends(self, vm_inv, key, old, new):
+    """Whether origin's `new` tip descends from `old`, in the vm clone."""
+    clones = vm_inv['repos'].get(key, [])
+    if not new or len(clones) != 1:
+      return False
+    return git(['merge-base', '--is-ancestor', old, new], clones[0]['top']).ok
+
   def run_actions(self, machine, actions):
     if not actions:
       return {}
@@ -1644,12 +1651,17 @@ class Driver:
         continue
       if r['kind'] == 'AUTO':
         s = r['machine']
+        # Origin may move on between the report and the apply, as it does
+        # on a repo a watcher pushes to. The move still goes to the reported
+        # tip, so a forward origin is safe. A rewritten one is not.
+        on = cur['origin'] != r['to']
         if cur[s] == r['to']:
           r['done'] = True
-        elif cur[s] == r['from'] and cur['origin'] == r['to']:
+        elif cur[s] == r['from'] and (
+            not on or self.descends(vm, r['key'], r['to'], cur['origin'])):
           steps[s].append({'aid': aid, 'op': 'ff', 'key': r['key'],
                            'branch': r['branch'], 'from': r['from'],
-                           'to': r['to'], 'row': r})
+                           'to': r['to'], 'row': r, 'moved_on': on})
         else:
           refuse(r, 'changed since the report')
         continue
@@ -1688,13 +1700,17 @@ class Driver:
         results[a['aid']] = got
         r = a['row']
         kind = ('PUSHED' if a['op'] == 'push' else 'DONE') if got['ok'] else 'REFUSED'
+        text = got.get('msg', '')
+        if got['ok'] and got.get('moved') and a.get('moved_on'):
+          text = 'fast-forwarded to the reported tip, origin has moved on'
         out.append({'kind': kind, 'repo': r['repo'], 'branch': r['branch'],
-                    'machine': machine, 'text': got.get('msg', '')})
+                    'machine': machine, 'text': text})
         if got.get('moved'):
           moved.add((r['key'], machine))
 
     def strip(acts):
-      return [{k: v for k, v in a.items() if k not in ('row', 'side', 'needs', 'noop')}
+      return [{k: v for k, v in a.items()
+               if k not in ('row', 'side', 'needs', 'noop', 'moved_on')}
               for a in acts]
 
     def ready(f, side):
