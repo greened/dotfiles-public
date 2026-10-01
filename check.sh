@@ -57,6 +57,9 @@ do_test() {
   echo
   echo "== test: emacsclient.py command line"
   "$here/emacs/check.sh"
+  echo
+  echo "== test: repo-sync decisions and moves"
+  "$here/bin/check.sh"
 }
 
 case "$what" in

@@ -1,0 +1,1805 @@
+#!/usr/bin/env python3
+"""Keep the git repos on two machines in step, by fast-forward only.
+
+One machine drives. Here it is called `vm`, and the other one `mac`. The
+driver reaches the mac only through an Emacs server socket, and only with
+detached jobs, so a slow git call on the mac never blocks its Emacs.
+
+    repo-sync                  report what differs, and save a plan
+    repo-sync -v               also list in-sync branches and one-machine ones
+    repo-sync --json           the same report as JSON
+    repo-sync --apply          do the AUTO fast-forwards from the last plan
+    repo-sync --apply --push <repo>:<branch>:<machine>
+                               also do one approved push, then fast-forward
+                               the other machine
+    repo-sync --probe-mac      run one mac job that reports its python and git
+
+Nothing is ever reset, stashed, committed, force-pushed or created. A branch
+syncs only when it exists on both machines, and a repo only when its origin
+URL is on the include list. A clone is matched by its normalized origin URL,
+`host/owner/repo`, and not by its path, so `git@example.com:owner/repo.git`
+and `https://example.com/owner/repo` are the same repo.
+
+Configuration is `<overlay>/repo-sync/repos.list` in each overlay, read in
+`.order`. Each line is a keyword and its fields, whitespace-separated, with
+`#` comments and `~` expanded on the machine that uses the value:
+
+    mac-socket   ~/.ssh/emacs-server       the forwarded Emacs socket
+    mac-path     /usr/local/bin:/usr/bin:/bin
+    mac-python   /usr/local/bin/python3
+    root         <vm-dir> <mac-dir>        scan root and path map
+    host-alias   <ssh-alias> <host>        e.g. example-alias example.com
+    repo         <url>                     include list, default deny
+    leave        <url> <branch>            report as LEFT, never ask
+    exclude-path <glob>                    drop matching clones and worktrees
+    ssh-key      <url-glob> <key> <vm|mac> e.g. example.com/owner/* ~/.ssh/k mac
+    gate         <hook>                    a PreToolUse hook run before a push
+    push-trust   <url>                     a mac push of this repo needs only
+                                           the --push approval, not the gate
+    after        <url> <vm|mac> <argv...>  run in the clone after it moves
+
+Exit status: 0 clean, 1 questions for a human, 2 error.
+"""
+
+import argparse
+import base64
+import fcntl
+import fnmatch
+import gzip
+import hashlib
+import json
+import os
+import re
+import secrets
+import shlex
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+import zlib
+from concurrent.futures import ThreadPoolExecutor
+
+VERSION = '1'
+MACHINES = ('vm', 'mac')
+WINDOW = 200
+FETCH_TIMEOUT = 30
+GIT_TIMEOUT = 60
+GATE_TIMEOUT = 30
+HOOK_TIMEOUT = 240
+EVAL_TIMEOUT = 10
+JOB_DEADLINE = 300
+POLL_INTERVAL = 2
+FETCH_PARALLEL = 4
+SCAN_DEPTH = 3
+MAX_RESULT_BYTES = 64 << 20
+SSH_BASE = 'ssh -o BatchMode=yes -o ConnectTimeout=10'
+
+SHA_RE = re.compile(r'^[0-9a-f]{40}$')
+DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
+CONTROL_RE = re.compile(r'[\x00-\x1f\x7f-\x9f]')
+B64_RE = re.compile(r'^[A-Za-z0-9+/=]*$')
+WIP_RE = re.compile(r'(?i)^wip\b')
+SAFE_PATH_RE = re.compile(r'^[A-Za-z0-9_./+-]+$')
+SAFE_PATHLIST_RE = re.compile(r'^[A-Za-z0-9_./+:-]+$')
+
+QUESTIONS = ('FAILED', 'ASK-PUSH', 'ASK', 'ASK-DIRTY', 'ASK-UPSTREAM',
+             'DIVERGED', 'IDENTITY', 'DUPLICATE')
+ACTIONABLE = ('AUTO', 'ASK-PUSH')
+
+
+class Error(Exception):
+  """A failure that ends the run with exit 2."""
+
+
+class TransportError(Error):
+  def __init__(self, state, message):
+    Error.__init__(self, message)
+    self.state = state
+
+
+# ---------------------------------------------------------------- processes
+
+class Result:
+  def __init__(self, rc, out, err, timed_out=False):
+    self.rc = rc
+    self.out = out
+    self.err = err
+    self.timed_out = timed_out
+
+  @property
+  def ok(self):
+    return self.rc == 0
+
+
+def _text(b):
+  return (b or b'').decode('utf-8', 'replace')
+
+
+def run(argv, cwd=None, env=None, timeout=None, stdin=None):
+  """Run argv and never hang past `timeout`."""
+  try:
+    p = subprocess.Popen(
+        argv, cwd=cwd, env=env,
+        stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        start_new_session=True)
+  except OSError as e:
+    return Result(127, '', str(e))
+  try:
+    out, err = p.communicate(stdin, timeout)
+  except subprocess.TimeoutExpired:
+    # Kill the whole group. An ssh under git keeps the pipes open otherwise,
+    # and communicate() would wait on it.
+    try:
+      os.killpg(p.pid, signal.SIGKILL)
+    except OSError:
+      pass
+    try:
+      out, err = p.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+      out, err = b'', b''
+    return Result(None, _text(out), _text(err), timed_out=True)
+  return Result(p.returncode, _text(out), _text(err))
+
+
+def git(args, cwd, env=None, timeout=GIT_TIMEOUT):
+  return run(['git'] + list(args), cwd=cwd, env=env, timeout=timeout)
+
+
+def clean(s, width=80):
+  return CONTROL_RE.sub('', s or '')[:width]
+
+
+def last_line(r):
+  if r.timed_out:
+    return 'timed out'
+  lines = [l for l in (r.err + '\n' + r.out).splitlines() if l.strip()]
+  return clean(lines[-1] if lines else 'exit %s' % r.rc, 200)
+
+
+# ---------------------------------------------------------------- urls
+
+URL_RE = re.compile(r'^[A-Za-z][A-Za-z0-9+.-]*://(?:[^@/]+@)?([^/:]+)(?::\d+)?/(.+)$')
+SCP_RE = re.compile(r'^(?:[^@/]+@)?([^:/]+):(.+)$')
+
+
+def normalize_url(url, aliases=None):
+  """Map an origin URL to `host/owner/repo`, or None if it is not one."""
+  u = (url or '').strip()
+  if not u:
+    return None
+  if u.startswith('file://'):
+    host, path = 'local', u[len('file://'):]
+  elif u.startswith('/'):
+    host, path = 'local', u
+  else:
+    m = URL_RE.match(u) or SCP_RE.match(u)
+    if not m:
+      return None
+    host, path = m.group(1).lower(), m.group(2)
+    host = (aliases or {}).get(host, host)
+  path = path.strip('/')
+  if path.endswith('.git'):
+    path = path[:-len('.git')]
+  path = path.rstrip('/')
+  if not path:
+    return None
+  return host + '/' + path
+
+
+def repo_name(key):
+  return key.rsplit('/', 1)[-1]
+
+
+def short_names(keys):
+  """The last URL component, or the whole key where two repos share one."""
+  seen = {}
+  for k in keys:
+    seen.setdefault(repo_name(k), []).append(k)
+  return {k: (repo_name(k) if len(seen[repo_name(k)]) == 1 else k)
+          for k in keys}
+
+
+# ---------------------------------------------------------------- config
+
+SPEC = {
+    'mac-socket': (1, 1), 'mac-path': (1, 1), 'mac-python': (1, 1),
+    'root': (2, 2), 'host-alias': (2, 2), 'repo': (1, 1), 'leave': (2, 2),
+    'exclude-path': (1, 1), 'ssh-key': (3, 3), 'gate': (1, 1),
+    'after': (3, None), 'push-trust': (1, 1),
+}
+
+
+class Config:
+  def __init__(self):
+    self.single = {}
+    self.roots = []
+    self.aliases = {}
+    self.raw_repos = []
+    self.raw_leave = []
+    self.exclude = []
+    self.ssh_keys = []
+    self.gates = []
+    self.raw_after = []
+    self.raw_trust = []
+    self.repos = []
+    self.leave = set()
+    self.after = []
+    self.trust = set()
+
+  @property
+  def mac_socket(self):
+    return self.single['mac-socket']
+
+  @property
+  def mac_python(self):
+    return self.single.get('mac-python', 'python3')
+
+  @property
+  def mac_path(self):
+    return self.single.get('mac-path', '/usr/bin:/bin')
+
+  def finish(self):
+    if 'mac-socket' not in self.single:
+      raise Error('config: no mac-socket in any repos.list')
+    if not SAFE_PATH_RE.match(self.mac_python):
+      raise Error('config: mac-python has characters outside [A-Za-z0-9_./+-]')
+    if not SAFE_PATHLIST_RE.match(self.mac_path):
+      raise Error('config: mac-path has characters outside [A-Za-z0-9_./+:-]')
+
+    def norm(url, where):
+      k = normalize_url(url, self.aliases)
+      if k is None:
+        raise Error('config: %s: not a repo URL: %s' % (where, url))
+      return k
+
+    self.repos = sorted({norm(u, w) for u, w in self.raw_repos})
+    self.leave = {(norm(u, w), b) for u, b, w in self.raw_leave}
+    self.after = [(norm(u, w), m, argv) for u, m, argv, w in self.raw_after]
+    self.trust = {norm(u, w) for u, w in self.raw_trust}
+    return self
+
+
+def parse_config(paths):
+  """Parse repos.list files in order. A later file wins a single-value key."""
+  cfg = Config()
+  for path in paths:
+    with open(path, encoding='utf-8') as f:
+      for n, line in enumerate(f, 1):
+        where = '%s:%d' % (path, n)
+        words = line.split('#', 1)[0].split()
+        if not words:
+          continue
+        kw, args = words[0], words[1:]
+        if kw not in SPEC:
+          raise Error('config: %s: unknown keyword %r' % (where, kw))
+        lo, hi = SPEC[kw]
+        if len(args) < lo or (hi is not None and len(args) > hi):
+          raise Error('config: %s: %s takes %s field(s)'
+                      % (where, kw, lo if lo == hi else '%d or more' % lo))
+        if kw in ('mac-socket', 'mac-path', 'mac-python'):
+          cfg.single[kw] = args[0]
+        elif kw == 'root':
+          cfg.roots.append((args[0], args[1]))
+        elif kw == 'host-alias':
+          cfg.aliases[args[0].lower()] = args[1].lower()
+        elif kw == 'repo':
+          cfg.raw_repos.append((args[0], where))
+        elif kw == 'leave':
+          cfg.raw_leave.append((args[0], args[1], where))
+        elif kw == 'exclude-path':
+          cfg.exclude.append(args[0])
+        elif kw == 'ssh-key':
+          if args[2] not in MACHINES:
+            raise Error('config: %s: ssh-key machine must be vm or mac' % where)
+          cfg.ssh_keys.append((args[0], args[1], args[2]))
+        elif kw == 'gate':
+          cfg.gates.append(args[0])
+        elif kw == 'push-trust':
+          cfg.raw_trust.append((args[0], where))
+        elif kw == 'after':
+          if args[1] not in MACHINES:
+            raise Error('config: %s: after machine must be vm or mac' % where)
+          cfg.raw_after.append((args[0], args[1], args[2:], where))
+  return cfg.finish()
+
+
+def read_order(path):
+  """The non-comment lines of an overlay `.order`, or None if it is absent."""
+  try:
+    with open(path, encoding='utf-8') as f:
+      lines = f.read().splitlines()
+  except OSError:
+    return None
+  return [l.strip() for l in lines
+          if l.strip() and not l.strip().startswith('#')]
+
+
+def config_paths(overlays):
+  names = read_order(os.path.join(overlays, '.order'))
+  if names is None:
+    try:
+      names = sorted(d for d in os.listdir(overlays)
+                     if os.path.isdir(os.path.join(overlays, d)))
+    except OSError:
+      names = []
+  paths = [os.path.join(overlays, n, 'repo-sync', 'repos.list') for n in names]
+  paths = [p for p in paths if os.path.isfile(p)]
+  if not paths:
+    raise Error('config: no repo-sync/repos.list in any overlay under '
+                + overlays)
+  return paths
+
+
+def default_overlays():
+  # Beside the dotfiles checkout, as link.sh finds it.
+  env = os.environ.get('DOTFILES_OVERLAYS')
+  if env:
+    return env
+  repo = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+  return os.path.join(os.path.dirname(repo), 'dotfiles-overlays')
+
+
+# ---------------------------------------------------------------- agent
+
+def git_env(job, key):
+  env = dict(os.environ)
+  env['GIT_TERMINAL_PROMPT'] = '0'
+  cmd = job.get('ssh_base', SSH_BASE)
+  for pattern, keyfile in job.get('ssh_keys', []):
+    if key and fnmatch.fnmatchcase(key, pattern):
+      cmd += ' -i %s -o IdentitiesOnly=yes' % shlex.quote(
+          os.path.expanduser(keyfile))
+      break
+  env['GIT_SSH_COMMAND'] = cmd
+  return env
+
+
+def expand(p):
+  return os.path.realpath(os.path.expanduser(p))
+
+
+def under(path, roots):
+  return any(path == r or path.startswith(r.rstrip('/') + '/') for r in roots)
+
+
+def excluded(path, patterns):
+  return any(fnmatch.fnmatchcase(path, os.path.expanduser(p))
+             for p in patterns)
+
+
+def scan(roots, depth=SCAN_DEPTH):
+  """Directories holding `.git`, to `depth` below each root."""
+  found = []
+
+  def walk(d, left):
+    if os.path.exists(os.path.join(d, '.git')):
+      found.append(d)
+      return
+    if left == 0:
+      return
+    try:
+      entries = sorted(os.scandir(d), key=lambda e: e.name)
+    except OSError:
+      return
+    for e in entries:
+      if e.name != '.git' and e.is_dir(follow_symlinks=False):
+        walk(e.path, left - 1)
+
+  for r in roots:
+    if os.path.isdir(r):
+      walk(r, depth)
+  return found
+
+
+def parse_worktrees(text):
+  out, cur = [], {}
+  for line in text.splitlines() + ['']:
+    if not line:
+      if cur:
+        out.append(cur)
+      cur = {}
+      continue
+    k, _, v = line.partition(' ')
+    if k == 'worktree':
+      cur['path'] = v
+    elif k == 'branch' and v.startswith('refs/heads/'):
+      cur['branch'] = v[len('refs/heads/'):]
+    elif k in ('bare', 'detached'):
+      cur[k] = True
+  return out
+
+
+def parse_status(text):
+  tracked, untracked = [], []
+  fields = text.split('\0')
+  i = 0
+  while i < len(fields):
+    f = fields[i]
+    i += 1
+    if len(f) < 4:
+      continue
+    xy, path = f[:2], clean(f[3:], 300)
+    if xy == '??':
+      untracked.append(path)
+    elif xy != '!!':
+      tracked.append('%s %s' % (xy.strip(), path))
+      if xy[0] in 'RC':
+        i += 1
+  return tracked, untracked
+
+
+def git_log(cwd, sha, window, env):
+  r = git(['log', '--topo-order', '-n', str(window), '--date=short',
+           '--format=%H%x09%cd%x09%s', sha], cwd, env)
+  out = []
+  for line in r.out.splitlines() if r.ok else []:
+    parts = line.split('\t', 2)
+    if len(parts) == 3 and SHA_RE.match(parts[0]):
+      out.append([parts[0], parts[1], clean(parts[2])])
+  return out
+
+
+def fetch(repo, job):
+  r = git(['fetch', '--prune', 'origin'], repo['top'],
+          git_env(job, repo['key']), timeout=job.get('fetch_timeout', FETCH_TIMEOUT))
+  if r.ok:
+    return None
+  if r.timed_out:
+    return 'fetch timed out after %ss' % job.get('fetch_timeout', FETCH_TIMEOUT)
+  return 'fetch failed: ' + last_line(r)
+
+
+def rebase_head(path, env):
+  """The branch a mid-rebase worktree will move, or None."""
+  for d in ('rebase-merge', 'rebase-apply'):
+    r = git(['rev-parse', '--git-path', d + '/head-name'], path, env)
+    if not r.ok:
+      continue
+    try:
+      with open(os.path.join(path, r.out.strip()), encoding='utf-8') as f:
+        name = f.read().strip()
+    except OSError:
+      continue
+    if name.startswith('refs/heads/'):
+      return name[len('refs/heads/'):]
+  return None
+
+
+def describe(repo, job, roots, want):
+  env = git_env(job, repo['key'])
+  top = repo['top']
+  home = os.path.expanduser('~')
+  wl = git(['worktree', 'list', '--porcelain'], top, env)
+  worktrees, dropped = [], {}
+  for e in parse_worktrees(wl.out if wl.ok else ''):
+    if e.get('bare'):
+      continue
+    p = os.path.realpath(e['path'])
+    b = e.get('branch')
+    if not b:
+      # A rebase detaches HEAD but still owns its branch, and old git would
+      # let a fetch move that ref underneath it.
+      rb = rebase_head(p, env) if os.path.isdir(p) else None
+      if rb:
+        dropped[rb] = 'mid-rebase at %s' % tilde(e['path'], home)
+      continue
+    if (not os.path.isdir(p) or excluded(e['path'], job.get('exclude', []))
+        or excluded(p, job.get('exclude', [])) or not under(p, roots)):
+      dropped[b] = 'checked out at %s, outside the scan' % tilde(e['path'], home)
+      continue
+    email = git(['config', '--get', 'user.email'], p, env)
+    st = git(['status', '--porcelain', '-z', '--untracked-files=normal'], p, env)
+    if st.ok:
+      tracked, untracked = parse_status(st.out)
+    else:
+      # Fail closed: a worktree whose state is unknown counts as dirty.
+      tracked, untracked = ['? git status failed: ' + last_line(st)], []
+    worktrees.append({'path': p, 'branch': b,
+                      'email': clean(email.out.strip(), 200) or None,
+                      'tracked': tracked, 'untracked': untracked})
+  refs = git(['for-each-ref',
+              '--format=%(refname)%09%(objectname)%09%(upstream)',
+              'refs/heads', 'refs/remotes/origin'], top, env)
+  heads, origin = {}, {}
+  for line in refs.out.splitlines() if refs.ok else []:
+    parts = line.split('\t')
+    if len(parts) != 3 or not SHA_RE.match(parts[1]):
+      continue
+    name, sha, up = parts
+    if name.startswith('refs/heads/'):
+      heads[name[len('refs/heads/'):]] = (sha, up or None)
+    elif name.startswith('refs/remotes/origin/') and name != 'refs/remotes/origin/HEAD':
+      origin[name[len('refs/remotes/origin/'):]] = sha
+  branches = {}
+  window = job.get('window', WINDOW)
+  for b, (tip, up) in sorted(heads.items()):
+    o = origin.get(b)
+    entry = {'tip': tip, 'origin': o, 'upstream': up}
+    if want is None or b in want:
+      entry['log'] = git_log(top, tip, window, env)
+      if job.get('origin_logs', True) and o and o != tip:
+        entry['olog'] = git_log(top, o, window, env)
+    branches[b] = entry
+  repo.update({
+      'worktrees': worktrees, 'dropped': dropped, 'branches': branches})
+
+
+def take_inventory(job, do_fetch=True):
+  """What one machine holds: the included clones, their branches and state."""
+  roots = [expand(r) for r in job['roots']]
+  wanted = set(job['repos'])
+  aliases = job.get('aliases', {})
+  repos = {}
+  for path in scan(roots):
+    if excluded(path, job.get('exclude', [])):
+      continue
+    c = git(['rev-parse', '--git-common-dir'], path)
+    if not c.ok:
+      continue
+    common = os.path.realpath(os.path.join(path, c.out.strip()))
+    if common in repos:
+      continue
+    url = git(['config', '--get', 'remote.origin.url'], path).out.strip()
+    key = normalize_url(url, aliases)
+    if key not in wanted:
+      continue
+    repos[common] = {'key': key, 'url': clean(url, 300), 'top': path,
+                     'fetch': None}
+  if do_fetch and repos:
+    with ThreadPoolExecutor(FETCH_PARALLEL) as ex:
+      errors = list(ex.map(lambda r: fetch(r, job), repos.values()))
+    for r, e in zip(repos.values(), errors):
+      r['fetch'] = e
+  want_all = job.get('want')
+  grouped = {}
+  for r in repos.values():
+    want = None if want_all is None else set(want_all.get(r['key'], []))
+    describe(r, job, roots, want)
+    grouped.setdefault(r['key'], []).append(r)
+  order_file = job.get('order_file')
+  order = None
+  if order_file:
+    order = read_order(os.path.expanduser(order_file))
+    if order is None:
+      order = 'missing'
+  includes = None
+  if job.get('gitconfig_overlays'):
+    includes = read_includes(os.path.expanduser(job['gitconfig_overlays']))
+  ok = sum(1 for r in repos.values() if r['fetch'] is None)
+  return {'version': VERSION, 'machine': job.get('machine'),
+          'home': os.path.expanduser('~'), 'roots': roots,
+          'order': order, 'includes': includes,
+          'fetched': [ok if do_fetch else 0, len(repos) if do_fetch else 0],
+          'repos': grouped}
+
+
+def read_includes(path):
+  try:
+    with open(path, encoding='utf-8') as f:
+      text = f.read()
+  except OSError:
+    return 'missing'
+  return [m.group(1) for m in re.finditer(r'(?m)^\s*path\s*=\s*(.+?)\s*$', text)]
+
+
+def worktree_for(clone, branch):
+  for w in clone['worktrees']:
+    if w['branch'] == branch:
+      return w
+  return None
+
+
+def do_action(a, inv, job):
+  """One push or fast-forward, refused unless the tip is still `from`."""
+  res = {'aid': a['aid'], 'ok': False, 'moved': False, 'msg': ''}
+  clones = inv['repos'].get(a['key'], [])
+  if len(clones) != 1:
+    res['msg'] = 'found %d clones of the repo' % len(clones)
+    return res
+  c = clones[0]
+  b = a['branch']
+  info = c['branches'].get(b)
+  if info is None:
+    res['msg'] = 'the branch is gone'
+    return res
+  env = git_env(job, a['key'])
+  timeout = job.get('fetch_timeout', FETCH_TIMEOUT)
+  if a['op'] == 'push':
+    if info['tip'] != a['to']:
+      res['msg'] = 'the tip moved since the report'
+      return res
+    # A plain push would recreate a branch someone deleted on the remote.
+    ls = git(['ls-remote', 'origin', 'refs/heads/' + b], c['top'], env,
+             timeout=timeout)
+    if not ls.ok:
+      res['msg'] = 'ls-remote failed: ' + last_line(ls)
+      return res
+    if not ls.out.strip():
+      res['msg'] = 'the remote branch is gone'
+      return res
+    r = git(['push', 'origin', '%s:refs/heads/%s' % (a['to'], b)], c['top'],
+            env, timeout=timeout)
+    res['ok'] = r.ok
+    res['msg'] = 'pushed' if r.ok else 'push refused: ' + last_line(r)
+    return res
+  if info['tip'] == a['to']:
+    res.update(ok=True, msg='already there')
+    return res
+  if info['tip'] != a['from']:
+    res['msg'] = 'the tip moved since the report'
+    return res
+  if b in c['dropped']:
+    res['msg'] = c['dropped'][b]
+    return res
+  w = worktree_for(c, b)
+  cwd = w['path'] if w is not None else c['top']
+  if w is not None and w['tracked']:
+    res['msg'] = 'tracked changes: ' + ', '.join(w['tracked'][:5])
+    return res
+  r = git(['fetch', 'origin'], cwd, env, timeout=timeout)
+  if not r.ok:
+    res['msg'] = 'fetch failed: ' + last_line(r)
+    return res
+  if not git(['merge-base', '--is-ancestor', a['from'], a['to']], cwd, env).ok:
+    res['msg'] = 'the planned tip does not descend from the current one'
+    return res
+  if w is not None:
+    head = git(['symbolic-ref', '-q', 'HEAD'], cwd, env)
+    if head.out.strip() != 'refs/heads/' + b:
+      res['msg'] = 'the worktree no longer holds the branch'
+      return res
+    r = git(['merge', '--ff-only', a['to']], cwd, env)
+  else:
+    # Not update-ref: git refuses to fetch into a branch checked out in any
+    # worktree, and one may have been checked out since the inventory.
+    r = git(['fetch', '.', '%s:refs/heads/%s' % (a['to'], b)], cwd, env)
+  if not r.ok:
+    res['msg'] = 'fast-forward refused: ' + last_line(r)
+    return res
+  tip = git(['rev-parse', '--verify', '-q', 'refs/heads/' + b], cwd, env)
+  if tip.out.strip() == a['to']:
+    res.update(ok=True, moved=True, msg='fast-forwarded')
+  else:
+    res['msg'] = 'ended at an unexpected tip'
+  return res
+
+
+def agent_apply(job):
+  inv = take_inventory(dict(job, want={}), do_fetch=False)
+  return {'results': [do_action(a, inv, job) for a in job.get('actions', [])]}
+
+
+def agent_after(job):
+  inv = take_inventory(dict(job, want={}), do_fetch=False)
+  out = []
+  for h in job.get('hooks', []):
+    clones = inv['repos'].get(h['key'], [])
+    if len(clones) != 1:
+      out.append({'key': h['key'], 'argv': h['argv'], 'ok': False,
+                  'msg': 'found %d clones of the repo' % len(clones)})
+      continue
+    argv = [os.path.expanduser(x) if x.startswith('~') else x
+            for x in h['argv']]
+    r = run(argv, cwd=clones[0]['top'], timeout=HOOK_TIMEOUT)
+    out.append({'key': h['key'], 'argv': h['argv'], 'ok': r.ok,
+                'msg': 'ok' if r.ok else last_line(r)})
+  return {'hooks': out}
+
+
+def fetch_guard_probe():
+  """Whether this git moves a branch by `fetch .` and refuses a checked-out one.
+
+  do_action relies on both. Built from plumbing in a scratch repo, so no
+  commit hook runs.
+  """
+  d = tempfile.mkdtemp(prefix='repo-sync-probe-')
+  env = dict(os.environ, GIT_AUTHOR_NAME='repo-sync', GIT_COMMITTER_NAME='repo-sync',
+             GIT_AUTHOR_EMAIL='repo-sync@invalid',
+             GIT_COMMITTER_EMAIL='repo-sync@invalid')
+  repo = os.path.join(d, 'repo')
+  out = {'fetch_by_sha': False, 'fetch_refuses_checked_out': False}
+  try:
+    if not git(['init', '-q', repo], d, env).ok:
+      return out
+    tree = git(['mktree'], repo, env).out.strip()
+    c1 = git(['commit-tree', tree, '-m', 'one'], repo, env).out.strip()
+    c2 = git(['commit-tree', tree, '-p', c1, '-m', 'two'], repo, env).out.strip()
+    for b in ('free', 'held'):
+      git(['update-ref', 'refs/heads/' + b, c1], repo, env)
+    git(['worktree', 'add', '-q', os.path.join(d, 'wt'), 'held'], repo, env)
+    tip = lambda b: git(['rev-parse', 'refs/heads/' + b], repo, env).out.strip()
+    ok = git(['fetch', '-q', '.', c2 + ':refs/heads/free'], repo, env).ok
+    out['fetch_by_sha'] = ok and tip('free') == c2
+    held = git(['fetch', '-q', '.', c2 + ':refs/heads/held'], repo, env)
+    out['fetch_refuses_checked_out'] = not held.ok and tip('held') == c1
+    return out
+  finally:
+    shutil.rmtree(d, True)
+
+
+def agent_version(job):
+  g = run(['git', '--version'], timeout=GIT_TIMEOUT)
+  body = {'version': VERSION, 'python': sys.version.split()[0],
+          'git': clean(g.out.strip())}
+  body.update(fetch_guard_probe())
+  return body
+
+
+AGENT_KINDS = {'inventory': take_inventory, 'apply': agent_apply,
+               'after': agent_after, 'version': agent_version}
+
+
+def agent_main(kind, job_path):
+  """Run one job and write result.json.gz next to the job file."""
+  out = os.path.join(os.path.dirname(os.path.abspath(job_path)),
+                     'result.json.gz')
+  try:
+    with open(job_path, encoding='utf-8') as f:
+      job = json.load(f)
+    if kind not in AGENT_KINDS:
+      raise Error('unknown agent job ' + kind)
+    body = {'ok': True, 'version': VERSION, 'data': AGENT_KINDS[kind](job)}
+  except Exception as e:  # reported to the driver, which decides
+    body = {'ok': False, 'version': VERSION, 'error': clean(str(e), 500)}
+  write_private(out, gzip.compress(json.dumps(body).encode(), mtime=0))
+  return 0 if body['ok'] else 1
+
+
+def write_private(path, data):
+  tmp = path + '.tmp'
+  fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+  with os.fdopen(fd, 'wb') as f:
+    f.write(data)
+  os.replace(tmp, path)
+
+
+def decode_result(raw):
+  """Gunzip and parse one job result, with a size cap."""
+  d = zlib.decompressobj(16 + zlib.MAX_WBITS)
+  try:
+    data = d.decompress(raw, MAX_RESULT_BYTES)
+  except zlib.error as e:
+    raise Error('mac result is not gzip: %s' % e)
+  if d.unconsumed_tail:
+    raise Error('mac result is over the size cap')
+  try:
+    body = json.loads(data.decode('utf-8'))
+  except ValueError as e:
+    raise Error('mac result is not JSON: %s' % e)
+  if not isinstance(body, dict):
+    raise Error('mac result is not an object')
+  if body.get('version') != VERSION:
+    raise Error('the mac ran repo-sync version %r, this is %r. Commit '
+                'bin/repo-sync so both run the same one'
+                % (body.get('version'), VERSION))
+  if not body.get('ok'):
+    raise Error('mac job failed: %s' % clean(str(body.get('error')), 500))
+  return body.get('data')
+
+
+# ---------------------------------------------------------------- transport
+
+def elisp_string(s):
+  return '"' + s.replace('\\', '\\\\').replace('"', '\\"') + '"'
+
+
+def parse_lisp_string(out):
+  s = out.strip()
+  if len(s) >= 2 and s[0] == '"' and s[-1] == '"':
+    return s[1:-1].replace('\\"', '"').replace('\\\\', '\\')
+  return s
+
+
+def launch_script(tag, kind, job_b64, script_b64, sha, python, path):
+  d = '/tmp/repo-sync-' + tag
+  return '\n'.join([
+      'umask 077',
+      'mkdir %s && cd %s || exit 1' % (d, d),
+      "PATH='%s'; export PATH" % path,
+      "printf %%s '%s' | base64 --decode | gzip -dc > repo-sync" % script_b64,
+      "printf %%s '%s' | base64 --decode > job.json" % job_b64,
+      'if [ "$(shasum -a 256 repo-sync | cut -d" " -f1)" != %s ]; then'
+      ' echo sha > rc.tmp; mv rc.tmp rc; exit 1; fi' % sha,
+      '%s repo-sync mac-agent %s job.json > agent.log 2>&1' % (python, kind),
+      'echo $? > rc.tmp; mv rc.tmp rc',
+  ])
+
+
+def launch_form(tag, script):
+  return ('(let ((default-directory "/tmp/")) '
+          '(set-process-query-on-exit-flag '
+          '(start-process %s nil "/bin/sh" "-c" %s) nil) "started")'
+          % (elisp_string('repo-sync-' + tag), elisp_string(script)))
+
+
+def poll_form(tag):
+  d = elisp_string('/tmp/repo-sync-%s/' % tag)
+  return ('(let ((d %s)) '
+          '(cond ((not (file-exists-p (concat d "rc"))) "PENDING") '
+          '((not (file-exists-p (concat d "result.json.gz"))) '
+          '(concat "NORESULT " (with-temp-buffer '
+          '(insert-file-contents-literally (concat d "rc")) '
+          '(replace-regexp-in-string "[^a-z0-9]" "" (buffer-string))))) '
+          '(t (with-temp-buffer (set-buffer-multibyte nil) '
+          '(insert-file-contents-literally (concat d "result.json.gz")) '
+          '(base64-encode-region (point-min) (point-max) t) '
+          '(buffer-string)))))' % d)
+
+
+def cleanup_form(tag):
+  return ('(progn (delete-directory %s t) "ok")'
+          % elisp_string('/tmp/repo-sync-%s/' % tag))
+
+
+def emacsclient(socket):
+  def evaluate(form):
+    return run(['emacsclient', '-s', socket, '-e', form], timeout=EVAL_TIMEOUT)
+  return evaluate
+
+
+class EmacsTransport:
+  """Run mac jobs as detached processes inside the mac's Emacs.
+
+  Every eval is short. After one eval times out, the run makes no more,
+  because a timed-out eval keeps running inside Emacs.
+  """
+
+  def __init__(self, socket, python, path, script, state_dir,
+               evaluate=None, sleep=time.sleep, clock=time.monotonic,
+               deadline=JOB_DEADLINE, interval=POLL_INTERVAL):
+    self.socket = socket
+    self.python = python
+    self.path = path
+    self.script = script
+    self.state_dir = state_dir
+    self.evaluate = evaluate or emacsclient(socket)
+    self.sleep = sleep
+    self.clock = clock
+    self.deadline = deadline
+    self.interval = interval
+    self.dead = None
+    self.ready = False
+
+  def _eval(self, form):
+    if self.dead:
+      raise TransportError('BUSY', self.dead)
+    r = self.evaluate(form)
+    if r.timed_out:
+      self.dead = ('an Emacs eval timed out, so this run makes no more '
+                   '(the mac Emacs may be busy)')
+      raise TransportError('BUSY', self.dead)
+    if not r.ok:
+      raise TransportError('UNREACHABLE', 'emacsclient failed: ' + last_line(r))
+    return parse_lisp_string(r.out)
+
+  def preflight(self):
+    if not os.path.exists(os.path.expanduser(self.socket)):
+      raise TransportError('UNREACHABLE', 'no Emacs socket at ' + self.socket)
+    if self._eval('t') != 't':
+      raise TransportError('UNREACHABLE', 'the Emacs socket did not answer t')
+    self.ready = True
+
+  def run_job(self, kind, job):
+    if not self.ready:
+      self.preflight()
+    tag = secrets.token_hex(8)
+    job_bytes = json.dumps(job, sort_keys=True).encode()
+    jobs = os.path.join(self.state_dir, 'jobs')
+    os.makedirs(jobs, mode=0o700, exist_ok=True)
+    write_private(os.path.join(jobs, '%s-%s.json' % (tag, kind)), job_bytes)
+    script = launch_script(
+        tag, kind, base64.b64encode(job_bytes).decode(),
+        base64.b64encode(gzip.compress(self.script, mtime=0)).decode(),
+        hashlib.sha256(self.script).hexdigest(), self.python, self.path)
+    if self._eval(launch_form(tag, script)) != 'started':
+      raise TransportError('UNREACHABLE', 'mac job %s did not start' % tag)
+    start = self.clock()
+    while True:
+      out = self._eval(poll_form(tag))
+      if out != 'PENDING':
+        break
+      if self.clock() - start >= self.deadline:
+        raise TransportError('TIMEOUT', 'mac job %s is still running after '
+                             '%ss. It was left to finish' % (tag, self.deadline))
+      self.sleep(self.interval)
+    if out.startswith('NORESULT'):
+      raise Error('mac job %s wrote no result (rc %s). See '
+                  '/tmp/repo-sync-%s/agent.log on the mac'
+                  % (tag, clean(out[len('NORESULT'):].strip(), 20), tag))
+    if not B64_RE.match(out):
+      raise Error('mac job %s returned something that is not base64' % tag)
+    data = decode_result(base64.b64decode(out))
+    self._eval(cleanup_form(tag))
+    return data
+
+
+# ---------------------------------------------------------------- validate
+
+def _need(cond, what):
+  if not cond:
+    raise Error('mac inventory failed validation: ' + what)
+
+
+def _is_str_list(x):
+  return isinstance(x, list) and all(isinstance(i, str) for i in x)
+
+
+def valid_branch_name(name):
+  return run(['git', 'check-ref-format', '--branch', name],
+             timeout=GIT_TIMEOUT).ok
+
+
+def validate_inventory(inv, mac_roots, known=frozenset(),
+                       check_name=valid_branch_name):
+  """Check the shape of an inventory from the other machine.
+
+  A branch name the driver does not also hold must pass
+  `git check-ref-format --branch`. Paths must be normalized, absolute and
+  under the configured mac roots, expanded with the reported home.
+  """
+  _need(isinstance(inv, dict), 'not an object')
+  home = inv.get('home')
+  _need(isinstance(home, str) and os.path.isabs(home), 'home')
+  _need(_is_str_list(inv.get('roots'))
+        and all(os.path.isabs(r) for r in inv['roots']), 'roots')
+  roots = [os.path.normpath(home + r[1:] if r == '~' or r.startswith('~/')
+                            else r) for r in mac_roots]
+  _need(inv.get('order') in (None, 'missing') or _is_str_list(inv.get('order')),
+        'order')
+  _need(inv.get('includes') in (None, 'missing')
+        or _is_str_list(inv.get('includes')), 'includes')
+  f = inv.get('fetched')
+  _need(isinstance(f, list) and len(f) == 2
+        and all(isinstance(i, int) for i in f), 'fetched')
+  repos = inv.get('repos')
+  _need(isinstance(repos, dict) and len(repos) <= 5000, 'repos')
+
+  def path_ok(p):
+    return (isinstance(p, str) and os.path.isabs(p)
+            and os.path.normpath(p) == p and under(p, roots))
+
+  def log_ok(log):
+    return (isinstance(log, list) and len(log) <= WINDOW
+            and all(isinstance(e, list) and len(e) == 3
+                    and all(isinstance(x, str) for x in e)
+                    and SHA_RE.match(e[0]) for e in log))
+
+  for key, clones in repos.items():
+    _need(isinstance(key, str) and isinstance(clones, list), 'repo ' + clean(str(key)))
+    for c in clones:
+      _need(isinstance(c, dict), 'clone')
+      _need(path_ok(c.get('top')), 'clone path outside the mac roots')
+      _need(c.get('fetch') is None or isinstance(c.get('fetch'), str), 'fetch')
+      c['fetch'] = c['fetch'] and clean(c['fetch'], 200)
+      _need(isinstance(c.get('dropped'), dict), 'dropped')
+      c['dropped'] = {clean(k, 200): clean(str(v), 300)
+                      for k, v in c['dropped'].items()}
+      wts = c.get('worktrees')
+      _need(isinstance(wts, list), 'worktrees')
+      for w in wts:
+        _need(isinstance(w, dict) and path_ok(w.get('path')),
+              'worktree path outside the mac roots')
+        _need(isinstance(w.get('branch'), str), 'worktree branch')
+        _need(w.get('email') is None or isinstance(w.get('email'), str), 'email')
+        _need(_is_str_list(w.get('tracked')) and _is_str_list(w.get('untracked')),
+              'status')
+        w['tracked'] = [clean(x, 300) for x in w['tracked']]
+        w['untracked'] = [clean(x, 300) for x in w['untracked']]
+        w['email'] = w['email'] and clean(w['email'], 200)
+      br = c.get('branches')
+      _need(isinstance(br, dict) and len(br) <= 20000, 'branches')
+      for name in list(br):
+        b = br[name]
+        _need(isinstance(name, str) and isinstance(b, dict), 'branch')
+        _need(isinstance(b.get('tip'), str) and SHA_RE.match(b['tip']), 'tip sha')
+        o = b.get('origin')
+        _need(o is None or (isinstance(o, str) and SHA_RE.match(o)), 'origin sha')
+        _need(b.get('upstream') is None or isinstance(b['upstream'], str),
+              'upstream')
+        for k in ('log', 'olog'):
+          if k in b:
+            _need(log_ok(b[k]), k)
+            for e in b[k]:
+              e[1] = e[1] if DATE_RE.match(e[1]) else ''
+              e[2] = clean(e[2])
+        if (key, name) not in known and not check_name(name):
+          del br[name]
+  return inv
+
+
+# ---------------------------------------------------------------- decide
+
+def tilde(path, home):
+  if path and home and (path == home or path.startswith(home + '/')):
+    return '~' + path[len(home):]
+  return path
+
+
+def logical(paths, roots, mac_roots, home):
+  """Map machine paths to the mac-dir form of `root`, so both compare."""
+  if not isinstance(paths, list):
+    return paths
+  out = []
+  for p in paths:
+    for r, m in zip(roots, mac_roots):
+      if p == r or p.startswith(r.rstrip('/') + '/'):
+        p = m + p[len(r):]
+        break
+    else:
+      p = tilde(p, home)
+    out.append(p)
+  return out
+
+
+def until_in(log, stop):
+  out = []
+  for e in log:
+    if e[0] in stop:
+      break
+    out.append(e)
+  return out
+
+
+def ahead(log, stop):
+  """(count, oldest date, found) of the commits in `log` above `stop`."""
+  n, oldest = 0, ''
+  for e in log:
+    if e[0] == stop:
+      return n, oldest, True
+    n, oldest = n + 1, e[1]
+  return n, oldest, False
+
+
+def identity_rows(vm, mac, cfg):
+  rows = []
+  vo, mo = vm.get('order'), mac.get('order')
+  if vo is not None and mo is not None and vo != mo:
+    if 'missing' in (vo, mo):
+      side = 'vm' if vo == 'missing' else 'mac'
+      rows.append({'kind': 'IDENTITY', 'text': '%s has no .order' % side})
+    else:
+      lacks = [x for x in vo if x not in mo]
+      extra = [x for x in mo if x not in vo]
+      if lacks:
+        rows.append({'kind': 'IDENTITY',
+                     'text': 'mac .order lacks ' + ', '.join(lacks)})
+      if extra:
+        rows.append({'kind': 'IDENTITY',
+                     'text': 'vm .order lacks ' + ', '.join(extra)})
+      if not lacks and not extra:
+        rows.append({'kind': 'IDENTITY', 'text': '.order lists the overlays in '
+                     'a different order: vm %s, mac %s'
+                     % (' '.join(vo), ' '.join(mo))})
+  mac_roots = [m for _, m in cfg.roots]
+  vi = logical(vm.get('includes'), vm['roots'], mac_roots, vm['home'])
+  mi = logical(mac.get('includes'), mac['roots'], mac_roots, mac['home'])
+  if vi is not None and mi is not None and vi != mi:
+    if 'missing' in (vi, mi):
+      side = 'vm' if vi == 'missing' else 'mac'
+      rows.append({'kind': 'IDENTITY', 'text': '%s has no ~/.gitconfig.overlays'
+                   % side})
+    else:
+      lacks = [x for x in vi if x not in mi]
+      extra = [x for x in mi if x not in vi]
+      for side, xs in (('mac', lacks), ('vm', extra)):
+        if xs:
+          rows.append({'kind': 'IDENTITY', 'text': '%s ~/.gitconfig.overlays '
+                       'lacks %s' % (side, ', '.join(xs))})
+      if not lacks and not extra:
+        rows.append({'kind': 'IDENTITY', 'text': '~/.gitconfig.overlays '
+                     'includes differ in order'})
+  return rows
+
+
+def email_rows(key, name, cv, cm):
+  ev = sorted({w.get('email') or '<unset>' for w in cv['worktrees']})
+  em = sorted({w.get('email') or '<unset>' for w in cm['worktrees']})
+  if ev and em and (ev != em or len(ev) > 1):
+    return [{'kind': 'IDENTITY', 'key': key, 'repo': name,
+             'text': '%s user.email vm %s mac %s'
+             % (name, ','.join(ev), ','.join(em))}]
+  return []
+
+
+def blocker(c, b, home):
+  """('SKIPPED'|'ASK-DIRTY'|None, detail, untracked list) for moving b."""
+  if b in c['dropped']:
+    return 'SKIPPED', c['dropped'][b], []
+  w = worktree_for(c, b)
+  if w is None:
+    return None, None, []
+  if w['tracked']:
+    return 'ASK-DIRTY', w['tracked'], []
+  return None, w['path'], w['untracked']
+
+
+def decide_branch(key, name, b, cl, homes, cfg):
+  base = {'key': key, 'repo': name, 'branch': b}
+  if (key, b) in cfg.leave:
+    return [dict(base, kind='LEFT')]
+  info = {m: cl[m]['branches'].get(b) for m in MACHINES}
+  if info['vm'] is None or info['mac'] is None:
+    return [dict(base, kind='ONLY', machine='vm' if info['vm'] else 'mac')]
+  tip = {m: info[m]['tip'] for m in MACHINES}
+  V, M = tip['vm'], tip['mac']
+  O = info['vm']['origin']
+  base.update(v=V, m=M, o=O)
+  if O != info['mac']['origin']:
+    return [dict(base, kind='FAILED', machine='both',
+                 text='origin/%s differs between the machines, so it moved '
+                 'during the run' % b)]
+  logs = {V: info['vm'].get('log') or [], M: info['mac'].get('log') or []}
+  if O:
+    logs.setdefault(O, info['vm'].get('olog') or [])
+  sets = {k: {e[0] for e in v} | {k} for k, v in logs.items()}
+
+  def anc(a, x):
+    return a == x or a in sets.get(x, ())
+
+  tips = [V, M] + ([O] if O else [])
+  top = next((x for x in tips if all(anc(t, x) for t in tips)), None)
+  if top is None:
+    return [diverged(base, V, M, O, logs, sets)]
+  if V == M and O in (None, V):
+    return [dict(base, kind='SYNC')]
+  if O:
+    want = 'refs/remotes/origin/' + b
+    bad = [m for m in MACHINES if info[m].get('upstream') != want]
+    if bad:
+      # A branch pushed without -u lands here, often with unpushed work, so
+      # this is a question and not a quiet skip.
+      ahead_of = [m for m in MACHINES
+                  if not all(anc(tip[m], x) for x in (V, M, O))]
+      ups = ', '.join('%s %s' % (m, clean(info[m].get('upstream'), 200)
+                                 or 'unset') for m in bad)
+      return [dict(base, kind='ASK-UPSTREAM', machine=','.join(bad),
+                   text='upstream is %s, not origin/%s. %s' % (
+                       ups, b, ('%s holds commits the other side or origin '
+                                'lacks' % ' and '.join(ahead_of))
+                       if ahead_of else 'no side holds unpushed commits'))]
+
+  def move(kind, side, frm, to, **extra):
+    what, detail, untracked = blocker(cl[side], b, homes[side])
+    if what == 'SKIPPED':
+      return [dict(base, kind='SKIPPED', machine=side, text=detail)]
+    if what == 'ASK-DIRTY':
+      return [dict(base, kind='ASK-DIRTY', machine=side, files=detail)]
+    row = dict(base, kind=kind, machine=side, **extra)
+    row.update({'from': frm, 'to': to})
+    out = [row]
+    if untracked:
+      out.append(dict(base, kind='NOTE', machine=side,
+                      path=tilde(detail, homes[side]), files=untracked))
+    return out
+
+  if O and top == O:
+    out = []
+    for side in MACHINES:
+      if tip[side] != O:
+        n, _, found = ahead(logs[O], tip[side])
+        out += move('AUTO', side, tip[side], O,
+                    count=n if found else '%d+' % n)
+    return out
+  pusher = 'vm' if V == top else 'mac'
+  other = 'mac' if pusher == 'vm' else 'vm'
+  if O is None:
+    n, oldest, found = ahead(logs[top], tip[other])
+    return [dict(base, kind='ASK', machine=pusher,
+                 count=n if found else '%d+' % n, oldest=oldest)]
+  n, oldest, found = ahead(logs[top], O)
+  # The gate judges a vm checkout, which cannot hold the mac's commit. So a
+  # mac row gets an id only for a push-trust repo, where the user's approval
+  # stands in for the gate.
+  trusted = pusher == 'mac' and key in cfg.trust
+  row = dict(base, kind='ASK-PUSH', machine=pusher, sha=top, trusted=trusted,
+             id='%s:%s:%s' % (name, b, pusher)
+             if pusher == 'vm' or trusted else None,
+             count=n if found else '%d+' % n, oldest=oldest,
+             follow=other if tip[other] != top else None,
+             follow_from=tip[other])
+  if row['follow'] is None:
+    return [row]
+  moved = move('ASK-PUSH', other, tip[other], top)
+  if moved[0]['kind'] != 'ASK-PUSH':
+    return [row] + moved
+  return [row] + moved[1:]
+
+
+def diverged(base, V, M, O, logs, sets):
+  labels = {}
+  for lab, sha in (('vm', V), ('mac', M), ('origin', O)):
+    if sha:
+      labels[sha] = labels[sha] + '=' + lab if sha in labels else lab
+  shas = list(labels)
+  sides = []
+  for sha in shas:
+    others = set()
+    for s in shas:
+      if s != sha:
+        others |= sets[s]
+    extras = until_in(logs[sha], others)
+    sides.append({'side': labels[sha], 'extras': extras,
+                  'wip': bool(extras) and all(WIP_RE.match(e[2]) for e in extras)})
+  shared = any(sets[a] & sets[b] for i, a in enumerate(shas) for b in shas[i + 1:])
+  return dict(base, kind='DIVERGED', remote=bool(O), beyond=not shared,
+              sides=sides)
+
+
+def decide(vm, mac, cfg):
+  """Map both inventories to one outcome per (repo URL, branch).
+
+  Pure: it reads the two inventories and the config and runs nothing.
+  """
+  rows = identity_rows(vm, mac, cfg)
+  keys = sorted(set(vm['repos']) | set(mac['repos']))
+  names = short_names(keys)
+  homes = {'vm': vm['home'], 'mac': mac['home']}
+  for key in keys:
+    name = names[key]
+    per = {'vm': vm['repos'].get(key, []), 'mac': mac['repos'].get(key, [])}
+    bad = False
+    for m in MACHINES:
+      for c in per[m]:
+        if c.get('fetch'):
+          rows.append({'kind': 'FAILED', 'key': key, 'repo': name, 'machine': m,
+                       'text': c['fetch'], 'path': tilde(c['top'], homes[m])})
+          bad = True
+    for m in MACHINES:
+      if len(per[m]) > 1:
+        rows.append({'kind': 'DUPLICATE', 'key': key, 'repo': name,
+                     'machine': m,
+                     'paths': [tilde(c['top'], homes[m]) for c in per[m]]})
+        bad = True
+    if bad:
+      continue
+    if not per['vm'] or not per['mac']:
+      rows.append({'kind': 'ONLY', 'key': key, 'repo': name, 'branch': '*',
+                   'machine': 'vm' if per['vm'] else 'mac'})
+      continue
+    cl = {'vm': per['vm'][0], 'mac': per['mac'][0]}
+    rows += email_rows(key, name, cl['vm'], cl['mac'])
+    for b in sorted(set(cl['vm']['branches']) | set(cl['mac']['branches'])):
+      rows += decide_branch(key, name, b, cl, homes, cfg)
+  rows += after_rows(rows, cfg)
+  return rows
+
+
+def after_rows(rows, cfg):
+  moving = {}
+  for r in rows:
+    if r['kind'] == 'AUTO':
+      moving.setdefault((r['key'], r['machine']), r['repo'])
+    # A row with no id is one the user pushes by hand, so apply moves nothing.
+    elif r['kind'] == 'ASK-PUSH' and r.get('follow') and r.get('id'):
+      moving.setdefault((r['key'], r['follow']), r['repo'])
+  out = []
+  for key, machine, argv in cfg.after:
+    if (key, machine) in moving:
+      out.append({'kind': 'AFTER', 'key': key, 'repo': moving[(key, machine)],
+                  'machine': machine, 'argv': argv})
+  return out
+
+
+def exit_code(rows):
+  return 1 if any(r['kind'] in QUESTIONS for r in rows) else 0
+
+
+# ---------------------------------------------------------------- report
+
+def render_row(r):
+  k = r['kind']
+  s = lambda x: '' if x is None else str(x)
+  if k == 'FAILED':
+    f = [s(r.get('repo')), r['machine'], r['text'], s(r.get('path'))]
+  elif k == 'AUTO':
+    f = [r['repo'], r['branch'], r['machine'], 'ff %s' % r['count'],
+         '%s..%s' % (r['from'][:7], r['to'][:7])]
+  elif k == 'ASK-PUSH':
+    f = [r['repo'], r['branch'], r['machine'],
+         '%s unpushed, oldest %s' % (r['count'], r['oldest'])]
+    if r.get('id'):
+      f.append('id=' + r['id'])
+      if r.get('follow'):
+        f.append('then ff ' + r['follow'])
+      if r.get('trusted'):
+        f.append('trusted: your --push approval replaces the gate')
+    else:
+      f.append('push it from the mac, then rerun repo-sync')
+  elif k == 'ASK-UPSTREAM':
+    f = [r['repo'], r['branch'], r['machine'], r['text']]
+  elif k == 'ASK':
+    f = [r['repo'], r['branch'], r['machine'],
+         '%s commits ahead, and no remote has the branch' % r['count']]
+  elif k == 'ASK-DIRTY':
+    f = [r['repo'], r['branch'], r['machine']] + r['files'][:10]
+    if len(r['files']) > 10:
+      f.append('and %d more' % (len(r['files']) - 10))
+  elif k == 'DIVERGED':
+    head = [r['repo'], r['branch'], 'remote: ' + ('yes' if r['remote'] else 'no')]
+    if r['beyond']:
+      head.append('(beyond the window)')
+    lines = ['%-9s %s' % (k, '  '.join(head))]
+    for side in r['sides']:
+      ex = side['extras']
+      wip = '   [all wip]' if side['wip'] else ''
+      if not ex:
+        lines.append('            %s  +0' % side['side'])
+        continue
+      lines.append('            %s +%d  %s  %s%s'
+                   % (side['side'], len(ex), ex[0][1], ex[0][2], wip))
+      for e in ex[1:5]:
+        lines.append('                    %s  %s' % (e[1], e[2]))
+      if len(ex) > 5:
+        lines.append('                    and %d more' % (len(ex) - 5))
+    return lines
+  elif k == 'LEFT':
+    f = [r['repo'], r['branch']]
+  elif k == 'IDENTITY':
+    f = [r['text']]
+  elif k == 'NOTE':
+    f = ['untracked: %s' % r['path']] + r['files'][:10]
+    if len(r['files']) > 10:
+      f.append('and %d more' % (len(r['files']) - 10))
+  elif k == 'AFTER':
+    f = [r['machine'], r['repo'], ' '.join(r['argv'])]
+  elif k == 'SKIPPED':
+    f = [r['repo'], r['branch'], r['machine'], r['text']]
+  elif k == 'DUPLICATE':
+    f = [r['repo'], r['machine'], 'more than one clone:'] + r['paths']
+  elif k in ('SYNC', 'ONLY'):
+    f = [r['repo'], r['branch']] + ([r['machine']] if k == 'ONLY' else [])
+  else:
+    f = [s(r.get('repo')), s(r.get('branch')), s(r.get('machine')),
+         s(r.get('text'))]
+  return ['%-9s %s' % (k, '  '.join(x for x in f if x != ''))]
+
+
+def header(vm, mac, state):
+  if mac is None:
+    return 'repo-sync  mac=%s' % state
+  return ('repo-sync  mac=%s  fetched vm %d/%d mac %d/%d'
+          % (state, vm['fetched'][0], vm['fetched'][1],
+             mac['fetched'][0], mac['fetched'][1]))
+
+
+def render(rows, head, verbose):
+  lines = [head]
+  hidden = {'SYNC': 0, 'ONLY': 0}
+  for r in rows:
+    if r['kind'] in hidden and not verbose:
+      hidden[r['kind']] += 1
+      continue
+    lines += render_row(r)
+  if not verbose and any(hidden.values()):
+    lines.append('SUMMARY   in sync %d, on one machine only %d (-v lists them)'
+                 % (hidden['SYNC'], hidden['ONLY']))
+  return '\n'.join(lines)
+
+
+# ---------------------------------------------------------------- driver
+
+def state_dir():
+  base = os.environ.get('XDG_STATE_HOME') or os.path.expanduser('~/.local/state')
+  d = os.path.join(base, 'repo-sync')
+  os.makedirs(d, mode=0o700, exist_ok=True)
+  os.chmod(d, 0o700)
+  return d
+
+
+class Lock:
+  def __init__(self, d):
+    self.path = os.path.join(d, 'lock')
+    self.fd = None
+
+  def __enter__(self):
+    self.fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+      fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+      os.close(self.fd)
+      raise Error('another repo-sync run holds ' + self.path)
+    return self
+
+  def __exit__(self, *exc):
+    fcntl.flock(self.fd, fcntl.LOCK_UN)
+    os.close(self.fd)
+
+
+def identity_files(cfg, overlays):
+  """Where each machine keeps `.order` and the generated include list."""
+  vm_order = os.path.join(overlays, '.order')
+  mac_order = None
+  real = os.path.realpath(overlays)
+  for vm_root, mac_root in cfg.roots:
+    r = expand(vm_root)
+    if real == r or real.startswith(r.rstrip('/') + '/'):
+      mac_order = mac_root + real[len(r):] + '/.order'
+      break
+  return {'vm': {'order': vm_order, 'includes': '~/.gitconfig.overlays'},
+          'mac': {'order': mac_order, 'includes': '~/.gitconfig.overlays'}}
+
+
+def base_job(cfg, machine, files):
+  roots = [v if machine == 'vm' else m for v, m in cfg.roots]
+  return {'machine': machine, 'roots': roots, 'repos': cfg.repos,
+          'aliases': cfg.aliases, 'exclude': cfg.exclude,
+          'ssh_keys': [[p, k] for p, k, m in cfg.ssh_keys if m == machine],
+          'ssh_base': SSH_BASE, 'fetch_timeout': FETCH_TIMEOUT,
+          'window': WINDOW, 'order_file': files[machine]['order'],
+          'gitconfig_overlays': files[machine]['includes']}
+
+
+class Driver:
+  """The vm side: take both inventories, decide, report or apply."""
+
+  def __init__(self, cfg, transport, state, files, out=sys.stdout,
+               check_name=valid_branch_name, job_overrides=None):
+    self.cfg = cfg
+    self.transport = transport
+    self.state = state
+    self.files = files
+    self.out = out
+    self.check_name = check_name
+    self.overrides = job_overrides or {}
+
+  def job(self, machine, **extra):
+    j = base_job(self.cfg, machine, self.files)
+    j.update(self.overrides.get(machine, {}))
+    j.update(extra)
+    return j
+
+  def collect(self):
+    vm = take_inventory(self.job('vm'))
+    want = {k: sorted({b for c in cl for b in c['branches']})
+            for k, cl in vm['repos'].items()}
+    mac = self.transport.run_job('inventory',
+                                 self.job('mac', want=want, origin_logs=False))
+    known = {(k, b) for k, bs in want.items() for b in bs}
+    return vm, validate_inventory(mac, [m for _, m in self.cfg.roots], known,
+                                  self.check_name)
+
+  def plan_path(self):
+    return os.path.join(self.state, 'plan.json')
+
+  def save_plan(self, rows):
+    keep = [r for r in rows if r['kind'] in ACTIONABLE]
+    write_private(self.plan_path(), json.dumps(
+        {'version': VERSION, 'created': int(time.time()), 'rows': keep},
+        indent=1).encode())
+
+  def emit(self, rows, head, verbose, as_json, code, extra=None):
+    if as_json:
+      body = {'header': head, 'rows': rows, 'exit': code}
+      body.update(extra or {})
+      self.out.write(json.dumps(body, indent=1) + '\n')
+    else:
+      self.out.write(render(rows, head, verbose) + '\n')
+
+  def report(self, verbose=False, as_json=False):
+    try:
+      vm, mac = self.collect()
+    except TransportError as e:
+      self.emit([{'kind': 'FAILED', 'machine': 'mac', 'text': str(e)}],
+                header(None, None, e.state), verbose, as_json, 2)
+      return 2
+    rows = decide(vm, mac, self.cfg)
+    self.save_plan(rows)
+    code = exit_code(rows)
+    self.emit(rows, header(vm, mac, 'ok'), verbose, as_json, code)
+    return code
+
+  def gate(self, vm_inv, key, branch, sha):
+    """None if every gate allows the push, else the refusal."""
+    if not self.cfg.gates:
+      return 'no gate is configured, so no push is allowed'
+    clones = vm_inv['repos'].get(key, [])
+    if len(clones) != 1:
+      return 'no single vm clone to judge the push from'
+    w = worktree_for(clones[0], branch)
+    cwd = w['path'] if w else clones[0]['top']
+    # A gate judges the HEAD of its cwd. Unless that HEAD is the pushed sha,
+    # its verdict is about some other commit.
+    head = git(['rev-parse', 'HEAD'], cwd).out.strip()
+    if head != sha:
+      return ('the gate would judge %s at %s, not the pushed %s. Push it '
+              'from a checkout of that commit' % (cwd, head[:7], sha[:7]))
+    cmd = 'cd %s && git push origin %s' % (
+        shlex.quote(cwd), shlex.quote('%s:refs/heads/%s' % (sha, branch)))
+    event = json.dumps({'hook_event_name': 'PreToolUse', 'tool_name': 'Bash',
+                        'tool_input': {'command': cmd}, 'cwd': cwd}).encode()
+    for g in self.cfg.gates:
+      r = run([os.path.expanduser(g)], cwd=cwd, stdin=event,
+              timeout=GATE_TIMEOUT)
+      if r.timed_out:
+        return 'gate %s timed out' % g
+      if not r.ok:
+        return 'gate %s refused: %s' % (g, last_line(r))
+      if not r.out.strip():
+        continue
+      try:
+        body = json.loads(r.out)
+      except ValueError:
+        return 'gate %s printed something that is not JSON' % g
+      if not isinstance(body, dict):
+        return 'gate %s printed JSON that is not an object' % g
+      hso = body.get('hookSpecificOutput', {})
+      if not isinstance(hso, dict):
+        return 'gate %s printed a hookSpecificOutput that is not an object' % g
+      if (hso.get('permissionDecision') in ('deny', 'ask')
+          or body.get('decision') == 'block'):
+        why = hso.get('permissionDecisionReason') or body.get('reason') or ''
+        return 'gate %s denied: %s' % (g, clean(str(why), 200))
+    return None
+
+  def run_actions(self, machine, actions):
+    if not actions:
+      return {}
+    if machine == 'vm':
+      res = agent_apply(self.job('vm', actions=actions))
+    else:
+      res = self.transport.run_job('apply', self.job('mac', actions=actions))
+    results = res.get('results') if isinstance(res, dict) else None
+    if not isinstance(results, list) or not all(
+        isinstance(r, dict) and isinstance(r.get('aid'), str)
+        and isinstance(r.get('ok'), bool) and isinstance(r.get('msg'), str)
+        for r in results):
+      raise Error('the %s apply job returned a malformed result' % machine)
+    return {r['aid']: dict(r, msg=clean(r['msg'], 300)) for r in results}
+
+  def apply(self, push_ids, as_json=False):
+    try:
+      with open(self.plan_path(), encoding='utf-8') as f:
+        plan = json.load(f)
+    except (OSError, ValueError):
+      raise Error('no saved plan. Run repo-sync without --apply first')
+    rows = plan.get('rows', [])
+    known = {r['id'] for r in rows if r['kind'] == 'ASK-PUSH' and r.get('id')}
+    unknown = sorted(set(push_ids) - known)
+    if unknown:
+      raise Error('--push names no ASK-PUSH row of the last report: '
+                  + ', '.join(unknown))
+    pending = [r for r in rows if not r.get('done') and (
+        r['kind'] == 'AUTO' or r.get('id') in push_ids)]
+    if not pending:
+      self.emit([], 'repo-sync --apply  nothing to do', False, as_json, 0)
+      return 0
+    try:
+      vm, mac = self.collect()
+    except TransportError as e:
+      self.emit([{'kind': 'FAILED', 'machine': 'mac', 'text': str(e)}],
+                header(None, None, e.state), False, as_json, 2)
+      return 2
+    out, steps, follow = [], {'vm': [], 'mac': []}, []
+
+    def refuse(r, why):
+      out.append({'kind': 'REFUSED', 'repo': r['repo'], 'branch': r['branch'],
+                  'machine': r['machine'], 'text': why})
+
+    for i, r in enumerate(pending):
+      cur = current(vm, mac, r['key'], r['branch'])
+      aid = str(i)
+      if cur is None:
+        refuse(r, 'the branch is missing, duplicated or failed to fetch')
+        continue
+      if r['kind'] == 'AUTO':
+        s = r['machine']
+        if cur[s] == r['to']:
+          r['done'] = True
+        elif cur[s] == r['from'] and cur['origin'] == r['to']:
+          steps[s].append({'aid': aid, 'op': 'ff', 'key': r['key'],
+                           'branch': r['branch'], 'from': r['from'],
+                           'to': r['to'], 'row': r})
+        else:
+          refuse(r, 'changed since the report')
+        continue
+      p, x, q = r['machine'], r['sha'], r.get('follow')
+      if p == 'mac' and r['key'] not in self.cfg.trust:
+        refuse(r, 'the repo is no longer push-trust, so a mac push needs '
+               'the user to push it by hand')
+        continue
+      pushed = cur['origin'] == x
+      if not pushed and not (cur[p] == x and cur['origin'] == r['o']):
+        refuse(r, 'changed since the report')
+        continue
+      if q and cur[q] not in (r['follow_from'], x):
+        refuse(r, 'the %s tip changed since the report' % q)
+        continue
+      if not pushed:
+        # A trusted mac push skips the gate, which would judge the vm
+        # checkout. The mac's own push hooks still run.
+        why = None if p == 'mac' else self.gate(vm, r['key'], r['branch'], x)
+        if why:
+          refuse(r, why)
+          continue
+        steps[p].append({'aid': aid, 'op': 'push', 'key': r['key'],
+                         'branch': r['branch'], 'from': x, 'to': x, 'row': r})
+      follow.append({'aid': aid + 'f', 'op': 'ff', 'key': r['key'],
+                     'branch': r['branch'], 'from': r['follow_from'], 'to': x,
+                     'row': r, 'side': q, 'needs': None if pushed else aid,
+                     'noop': not q or cur[q] == x})
+
+    results = {}
+    moved = set()
+
+    def record(acts, res, machine):
+      for a in acts:
+        got = res.get(a['aid'], {'ok': False, 'msg': 'no result'})
+        results[a['aid']] = got
+        r = a['row']
+        kind = ('PUSHED' if a['op'] == 'push' else 'DONE') if got['ok'] else 'REFUSED'
+        out.append({'kind': kind, 'repo': r['repo'], 'branch': r['branch'],
+                    'machine': machine, 'text': got.get('msg', '')})
+        if got.get('moved'):
+          moved.add((r['key'], machine))
+
+    def strip(acts):
+      return [{k: v for k, v in a.items() if k not in ('row', 'side', 'needs', 'noop')}
+              for a in acts]
+
+    def ready(f, side):
+      return (f['side'] == side and not f['noop']
+              and (f['needs'] is None or results.get(f['needs'], {}).get('ok')))
+
+    code = 0
+    try:
+      record(steps['vm'], self.run_actions('vm', strip(steps['vm'])), 'vm')
+      mac_acts = steps['mac'] + [f for f in follow if ready(f, 'mac')]
+      record(mac_acts, self.run_actions('mac', strip(mac_acts)), 'mac')
+      vm_follow = [f for f in follow if ready(f, 'vm')]
+      record(vm_follow, self.run_actions('vm', strip(vm_follow)), 'vm')
+    except Error as e:
+      out.append({'kind': 'FAILED', 'machine': 'mac', 'text': str(e)})
+      code = 2
+    for a in steps['vm'] + steps['mac']:
+      if a['row']['kind'] == 'AUTO' and results.get(a['aid'], {}).get('ok'):
+        a['row']['done'] = True
+    for f in follow:
+      push_ok = f['needs'] is None or results.get(f['needs'], {}).get('ok')
+      ff_ok = f['noop'] or results.get(f['aid'], {}).get('ok')
+      if push_ok and ff_ok:
+        f['row']['done'] = True
+    self.save_plan(rows)
+    if code == 0:
+      out += self.after(moved)
+    if code == 0 and any(r['kind'] in ('REFUSED', 'FAILED') for r in out):
+      code = 1
+    self.emit(out, 'repo-sync --apply', False, as_json, code)
+    return code
+
+  def after(self, moved):
+    out = []
+    for machine in MACHINES:
+      hooks = [{'key': k, 'argv': argv} for k, m, argv in self.cfg.after
+               if m == machine and (k, machine) in moved]
+      if not hooks:
+        continue
+      try:
+        if machine == 'vm':
+          res = agent_after(self.job('vm', hooks=hooks))
+        else:
+          res = self.transport.run_job('after', self.job('mac', hooks=hooks))
+      except Error as e:
+        out.append({'kind': 'FAILED', 'machine': machine, 'text': str(e)})
+        continue
+      hooks_out = res.get('hooks') if isinstance(res, dict) else None
+      if not isinstance(hooks_out, list) or not all(
+          isinstance(h, dict) and isinstance(h.get('key'), str)
+          and _is_str_list(h.get('argv')) and isinstance(h.get('msg'), str)
+          for h in hooks_out):
+        out.append({'kind': 'FAILED', 'machine': machine,
+                    'text': 'the after job returned a malformed result'})
+        continue
+      for h in hooks_out:
+        out.append({'kind': 'AFTER', 'machine': machine,
+                    'repo': repo_name(h['key']), 'argv': h['argv'],
+                    'text': clean(h['msg'], 300)})
+    return out
+
+  def probe(self):
+    try:
+      v = self.transport.run_job('version', {})
+    except TransportError as e:
+      self.out.write('repo-sync  mac=%s  %s\n' % (e.state, e))
+      return 2
+    guard = v.get('fetch_by_sha') is True and \
+        v.get('fetch_refuses_checked_out') is True
+    self.out.write('repo-sync  mac=ok  python %s  %s  agent %s  '
+                   'fetch-into-branch guard %s\n'
+                   % (v.get('python'), v.get('git'), v.get('version'),
+                      'ok' if guard else 'MISSING'))
+    return 0 if guard else 1
+
+
+def current(vm, mac, key, branch):
+  """The live vm, mac and origin tips of one branch, or None."""
+  tips = {}
+  for m, inv in (('vm', vm), ('mac', mac)):
+    cl = inv['repos'].get(key, [])
+    if len(cl) != 1 or cl[0].get('fetch'):
+      return None
+    b = cl[0]['branches'].get(branch)
+    if b is None:
+      return None
+    tips[m] = b['tip']
+    tips[m + '-origin'] = b['origin']
+  if tips['vm-origin'] != tips['mac-origin']:
+    return None
+  return {'vm': tips['vm'], 'mac': tips['mac'], 'origin': tips['vm-origin']}
+
+
+def committed_script(path=None):
+  """This script as committed, which is what the mac runs.
+
+  Refused when the running file differs, because then the two machines would
+  run different code.
+  """
+  here = os.path.realpath(path or __file__)
+  d = os.path.dirname(here)
+  top = git(['rev-parse', '--show-toplevel'], d)
+  if not top.ok:
+    raise Error('%s is not in a git checkout, so there is no committed copy '
+                'to ship to the mac' % here)
+  rel = os.path.relpath(here, top.out.strip())
+  try:
+    r = subprocess.run(['git', '-C', top.out.strip(), 'show', 'HEAD:' + rel],
+                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                       timeout=GIT_TIMEOUT)
+  except (OSError, subprocess.TimeoutExpired) as e:
+    raise Error('cannot read the committed %s: %s' % (rel, e))
+  if r.returncode != 0:
+    raise Error('no committed copy of %s to ship to the mac' % rel)
+  with open(here, 'rb') as f:
+    running = f.read()
+  if running != r.stdout:
+    raise Error('%s differs from its committed copy, and the mac would run '
+                'the committed one. Commit it or check it out first' % rel)
+  return r.stdout
+
+
+def main(argv=None):
+  argv = sys.argv[1:] if argv is None else argv
+  if argv[:1] == ['mac-agent']:
+    if len(argv) != 3:
+      sys.stderr.write('usage: repo-sync mac-agent KIND JOB\n')
+      return 2
+    return agent_main(argv[1], argv[2])
+  p = argparse.ArgumentParser(
+      prog='repo-sync', description='Keep the repos on two machines in step.')
+  p.add_argument('--apply', action='store_true',
+                 help='do the AUTO fast-forwards of the last report')
+  p.add_argument('--push', action='append', default=[],
+                 metavar='REPO:BRANCH:MACHINE',
+                 help='with --apply, also do this ASK-PUSH row')
+  p.add_argument('--json', action='store_true')
+  p.add_argument('-v', '--verbose', action='store_true')
+  p.add_argument('--probe-mac', action='store_true',
+                 help="report the mac's python and git, and nothing else")
+  p.add_argument('--overlays', help='the overlays directory')
+  p.add_argument('--version', action='version', version=VERSION)
+  a = p.parse_args(argv)
+  if a.push and not a.apply:
+    p.error('--push needs --apply')
+  try:
+    overlays = a.overlays or default_overlays()
+    cfg = parse_config(config_paths(overlays))
+    state = state_dir()
+    transport = EmacsTransport(os.path.expanduser(cfg.mac_socket),
+                               cfg.mac_python, cfg.mac_path,
+                               committed_script(), state)
+    driver = Driver(cfg, transport, state, identity_files(cfg, overlays))
+    with Lock(state):
+      if a.probe_mac:
+        return driver.probe()
+      if a.apply:
+        return driver.apply(a.push, a.json)
+      return driver.report(a.verbose, a.json)
+  except Error as e:
+    sys.stderr.write('repo-sync: %s\n' % e)
+    return 2
+
+
+if __name__ == '__main__':
+  sys.exit(main())

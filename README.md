@@ -152,6 +152,33 @@ semantics as the dotfiles overlays. (Migrating an existing single private repo t
 this layout is just extracting its public-tier skills into the public repo; the
 bootstrap already supports any number of Claude repos.)
 
+## Keeping two machines in step: `repo-sync`
+
+`bin/repo-sync`, linked to `~/.local/bin/repo-sync`, compares the git repos on
+this machine with the ones on a second machine and fast-forwards whichever
+side is behind. It reaches the second machine only through that machine's
+Emacs server socket, and runs its work there as a detached job, so a slow
+fetch never blocks that Emacs.
+
+    repo-sync                  # report, and save the plan
+    repo-sync -v               # also list branches that need nothing
+    repo-sync --apply          # do the AUTO fast-forwards of the last report
+    repo-sync --apply --push <repo>:<branch>:<machine>
+                               # also do one push you approved
+
+It never resets, stashes, commits or force-pushes, and it never creates a
+branch. A branch syncs only if it exists on both machines. Anything that is
+not a plain fast-forward (unpushed commits, uncommitted changes, diverged
+branches, a different git identity) comes back as a question.
+
+The configuration lives in the overlays, one `repo-sync/repos.list` per
+overlay, read in `.order`. It names the socket, the scan roots and how they
+map between the machines, and the repos to include. The script's own header
+lists every keyword. A clone is matched by its origin URL, so the same repo
+can live at different paths on each machine.
+
+`./bin/check.sh` runs its tests against scratch repos.
+
 ## Deployment model
 
 `~/.bashrc` and `~/.bash_profile` are written as **real files that source** the

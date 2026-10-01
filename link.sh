@@ -36,6 +36,10 @@ link "$PUB/emacs/emacs-mcp-stdio.sh" "$HOME/.local/bin/emacs-mcp-stdio.sh"
 # the transport above; the macOS Dock bundle below is only a stub that execs it.
 link "$PUB/bin/emacs-frame"          "$HOME/.local/bin/emacs-frame"
 
+# Keep the two machines' repos in sync. Config lives in the overlays'
+# repo-sync/repos.list since this repo names no host or repo.
+link "$PUB/bin/repo-sync"            "$HOME/.local/bin/repo-sync"
+
 # The Dock will take nothing but an .app, and a bundle is an awkward thing to
 # keep in git, so the bundle here is a stub and all the behaviour lives in
 # bin/emacs-frame.  First platform conditional in this file: link.sh also runs
