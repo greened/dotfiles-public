@@ -81,6 +81,7 @@ link "$PUB/tmux/tmux.conf"       "$HOME/.tmux.conf"
 link "$PUB/ssh/config"           "$HOME/.ssh/config"
 link "$PUB/gnupg/gpg-agent.conf" "$HOME/.gnupg/gpg-agent.conf"
 link "$PUB/dircolors/dir_colors" "$HOME/.dir_colors"
+link "$PUB/git/ignore"           "$HOME/.config/git/ignore"
 link "$PUB/screen/screenrc"      "$HOME/.screenrc"
 link "$PUB/terminfo"             "$HOME/.terminfo"
 
