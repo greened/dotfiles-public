@@ -80,7 +80,8 @@ POLL_INTERVAL = 2
 FETCH_PARALLEL = 4
 SCAN_DEPTH = 3
 MAX_RESULT_BYTES = 64 << 20
-SSH_BASE = 'ssh -o BatchMode=yes -o ConnectTimeout=10'
+SSH_OPTIONS = '-o BatchMode=yes -o ConnectTimeout=10'
+SSH_BASE = 'ssh ' + SSH_OPTIONS
 
 SHA_RE = re.compile(r'^[0-9a-f]{40}$')
 DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
@@ -159,10 +160,16 @@ def clean(s, width=80):
 
 
 def last_line(r):
+  """The most telling line of a failed command's output."""
   if r.timed_out:
     return 'timed out'
   lines = [l for l in (r.err + '\n' + r.out).splitlines() if l.strip()]
-  return clean(lines[-1] if lines else 'exit %s' % r.rc, 200)
+  # Git ends a refused fetch with boilerplate about access rights, so the
+  # last line alone does not say what went wrong.
+  telling = [l for l in lines if l.lstrip().startswith('fatal:')
+             or 'Permission denied' in l or 'ERROR' in l]
+  pick = telling[0] if telling else (lines[-1] if lines else 'exit %s' % r.rc)
+  return clean(pick, 200)
 
 
 # ---------------------------------------------------------------- urls
@@ -350,15 +357,25 @@ def default_overlays():
 
 # ---------------------------------------------------------------- agent
 
-def git_env(job, key):
+def git_env(job, key, cwd):
+  """The environment for a git call in the clone at cwd.
+
+  GIT_SSH_COMMAND overrides a clone's own core.sshCommand, so that command
+  is kept and only the batch options are appended. Git runs the result
+  through a shell, so they are appended as plain text.
+  """
   env = dict(os.environ)
   env['GIT_TERMINAL_PROMPT'] = '0'
-  cmd = job.get('ssh_base', SSH_BASE)
-  for pattern, keyfile in job.get('ssh_keys', []):
-    if key and fnmatch.fnmatchcase(key, pattern):
-      cmd += ' -i %s -o IdentitiesOnly=yes' % shlex.quote(
-          os.path.expanduser(keyfile))
-      break
+  own = git(['config', '--get', 'core.sshCommand'], cwd).out.strip()
+  if own:
+    cmd = own + ' ' + SSH_OPTIONS
+  else:
+    cmd = job.get('ssh_base', SSH_BASE)
+    for pattern, keyfile in job.get('ssh_keys', []):
+      if key and fnmatch.fnmatchcase(key, pattern):
+        cmd += ' -i %s -o IdentitiesOnly=yes' % shlex.quote(
+            os.path.expanduser(keyfile))
+        break
   env['GIT_SSH_COMMAND'] = cmd
   return env
 
@@ -450,7 +467,7 @@ def git_log(cwd, sha, window, env):
 
 def fetch(repo, job):
   r = git(['fetch', '--prune', 'origin'], repo['top'],
-          git_env(job, repo['key']), timeout=job.get('fetch_timeout', FETCH_TIMEOUT))
+          git_env(job, repo['key'], repo['top']), timeout=job.get('fetch_timeout', FETCH_TIMEOUT))
   if r.ok:
     return None
   if r.timed_out:
@@ -475,7 +492,7 @@ def rebase_head(path, env):
 
 
 def describe(repo, job, roots, want):
-  env = git_env(job, repo['key'])
+  env = git_env(job, repo['key'], repo['top'])
   top = repo['top']
   home = os.path.expanduser('~')
   wl = git(['worktree', 'list', '--porcelain'], top, env)
@@ -611,7 +628,7 @@ def do_action(a, inv, job):
   if info is None:
     res['msg'] = 'the branch is gone'
     return res
-  env = git_env(job, a['key'])
+  env = git_env(job, a['key'], c['top'])
   timeout = job.get('fetch_timeout', FETCH_TIMEOUT)
   if a['op'] == 'push':
     if info['tip'] != a['to']:

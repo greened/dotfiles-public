@@ -17,6 +17,7 @@ import io
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -911,6 +912,86 @@ class Apply(unittest.TestCase):
     self.assertIn('malformed', kinds(out, 'FAILED')[0]['text'])
 
 
+GITHUB_REFUSAL = (
+    'git@github.com: Permission denied (publickey).\n'
+    'fatal: Could not read from remote repository.\n\n'
+    'Please make sure you have the correct access rights\n'
+    'and the repository exists.\n')
+
+
+class SshCommand(unittest.TestCase):
+  """A clone's own core.sshCommand survives repo-sync's GIT_SSH_COMMAND."""
+
+  def setUp(self):
+    self.w = World(self)
+    self.key = rs.normalize_url(self.w.origin)
+
+  def own(self, cmd):
+    git('config', 'core.sshCommand', cmd, cwd=self.w.vm)
+
+  def env(self, **job):
+    return rs.git_env(job, self.key, self.w.vm)['GIT_SSH_COMMAND']
+
+  def test_own_ssh_command_is_kept_and_gets_the_options(self):
+    own = 'ssh -i ~/.ssh/own -o IdentitiesOnly=yes'
+    self.own(own)
+    cmd = self.env()
+    self.assertTrue(cmd.startswith(own), cmd)
+    self.assertTrue(cmd.endswith(rs.SSH_OPTIONS), cmd)
+    self.assertEqual(cmd, own + ' ' + rs.SSH_OPTIONS)
+
+  def test_a_matching_ssh_key_adds_no_identity_over_the_own_command(self):
+    self.own('ssh -o IdentitiesOnly=yes')
+    cmd = self.env(ssh_keys=[[self.key, '~/.ssh/other']])
+    self.assertNotIn('-i', cmd.split())
+    self.assertNotIn('other', cmd)
+
+  def test_unset_own_command_behaves_as_before(self):
+    self.assertEqual(self.env(), rs.SSH_BASE)
+    cmd = self.env(ssh_keys=[[self.key, '~/.ssh/other']])
+    self.assertEqual(cmd, '%s -i %s -o IdentitiesOnly=yes'
+                     % (rs.SSH_BASE, os.path.expanduser('~/.ssh/other')))
+
+  def test_a_real_fetch_runs_the_own_command(self):
+    bindir = os.path.join(self.w.tmp, 'stub')
+    os.makedirs(bindir)
+    stub = os.path.join(bindir, 'ssh')
+    log = os.path.join(self.w.tmp, 'ssh-argv')
+    with open(stub, 'w') as f:
+      f.write('#!/bin/sh\necho "$*" >> %s\nprintf %%s %s >&2\nexit 255\n'
+              % (log, shlex.quote(GITHUB_REFUSAL.splitlines()[0])))
+    os.chmod(stub, 0o700)
+    git('remote', 'set-url', 'origin', 'ssh://example.invalid/r.git',
+        cwd=self.w.vm)
+    self.own(stub + ' -o IdentitiesOnly=yes')
+    inv = rs.take_inventory({'machine': 'vm', 'roots': [self.w.vmroot],
+                             'repos': ['example.invalid/r'],
+                             'fetch_timeout': 20})
+    clone = inv['repos']['example.invalid/r'][0]
+    with open(log) as f:
+      calls = f.read().splitlines()
+    self.assertTrue(any(c.startswith('-o IdentitiesOnly=yes ' + rs.SSH_OPTIONS)
+                        and 'example.invalid' in c for c in calls), calls)
+    self.assertIn('Permission denied', clone['fetch'])
+
+
+class LastLine(unittest.TestCase):
+
+  def test_git_permission_error_names_the_telling_line(self):
+    r = rs.Result(128, '', GITHUB_REFUSAL)
+    self.assertEqual(rs.last_line(r),
+                     'git@github.com: Permission denied (publickey).')
+
+  def test_a_fatal_line_beats_the_trailing_boilerplate(self):
+    r = rs.Result(128, '', 'fatal: repository not found\n\n'
+                  'Please make sure you have the correct access rights\n'
+                  'and the repository exists.\n')
+    self.assertEqual(rs.last_line(r), 'fatal: repository not found')
+
+  def test_plain_output_falls_back_to_the_last_line(self):
+    self.assertEqual(rs.last_line(rs.Result(1, '', 'one\ntwo\n\n')), 'two')
+
+
 class CommittedScript(unittest.TestCase):
 
   def test_drift_from_the_committed_copy_is_refused(self):
@@ -1110,7 +1191,7 @@ class Transport(unittest.TestCase):
   def test_20_a_slice_that_is_not_base64_is_refused(self):
     emacs = FakeEmacs(['t', '"started"', 'RESULT'], result='AAAA*AAA')
     t = self.transport(emacs)
-    with self.assertRaisesRegex(rs.Error, 'not base64'):
+    with self.assertRaisesRegex(rs.Error, 'returned a slice that is not base64'):
       t.run_job('inventory', {})
 
   def test_20_padding_inside_the_result_is_an_error_not_a_crash(self):
