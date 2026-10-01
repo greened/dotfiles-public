@@ -111,12 +111,13 @@ is the difference between a documented exclusion and a silent omission."
 ;;; The oracle: the real tree
 
 (ert-deftest cp-derivation-matches-the-list-it-replaced ()
-  "The five names the hand-written list carried, and `themes' excluded.
+  "The local packages under emacs/lisp, with `themes' excluded.
+Add a name here when a package is added.
 If this fails, the derivation changed WHAT GETS BUILT, which is the one
 outcome a refactor of the input set must not have."
   (should (equal (cp-packages)
-                 '("agenda-feeds" "commit-gate" "llm-api-key" "term-launcher"
-                   "vterm-reconnect")))
+                 '("agenda-feeds" "commit-gate" "font-setup" "llm-api-key"
+                   "term-launcher" "vterm-reconnect")))
   (should (member "themes" (cp-candidate-dirs)))
   (should-not (member "themes" (cp-packages))))
 

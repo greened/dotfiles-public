@@ -49,6 +49,9 @@ do_test() {
   echo "== test: agenda-feeds iCalendar reader"
   EMACS="$emacs" "$here/emacs/lisp/agenda-feeds/check.sh"
   echo
+  echo "== test: font-setup missing-font decisions"
+  EMACS="$emacs" "$here/emacs/lisp/font-setup/check.sh"
+  echo
   echo "== test: llm-api-key pass-entry resolution"
   EMACS="$emacs" "$here/emacs/lisp/llm-api-key/check.sh"
   echo

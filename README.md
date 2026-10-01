@@ -179,6 +179,23 @@ can live at different paths on each machine.
 
 `./bin/check.sh` runs its tests against scratch repos.
 
+## Fonts in Emacs
+
+`emacs/lisp/font-setup` sets JetBrains Mono as the default face and pins the
+Nerd Font code points to Symbols Nerd Font Mono, on macOS and Linux alike. tmux
+runs inside Emacs, so this is what makes the tmux-powerline arrows and icons
+line up.
+
+On Debian, install both fonts with apt:
+
+    sudo apt install fonts-jetbrains-mono fonts-nerd-symbols
+
+`fonts-nerd-symbols` is in forky and sid only. On trixie or earlier, on another
+Linux and on macOS, Emacs asks once whether to download the symbols font from
+the Nerd Fonts release. It checks the archive's sha256 before it installs
+anything. To be asked again after a no, delete `~/.emacs.d/font-setup-declined`.
+`emacs/lisp/font-setup/README.md` has the details and the options.
+
 ## Deployment model
 
 `~/.bashrc` and `~/.bash_profile` are written as **real files that source** the

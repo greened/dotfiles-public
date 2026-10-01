@@ -1345,16 +1345,9 @@ end tell
 (use-package faces
   :ensure nil
   :config
-;;-bitstream-bitstream vera sans mono-medium-r-*-*-*-120-*-*-*-*-*-*
-
-;; Comment out for windows.
-(cond ((eq window-system 'w32)
-       (set-face-attribute 'default nil :font "-*-Consolas-medium-r-*-*-*-120-*-*-*-*-*-*"))
-      ((eq window-system 'ns)
-       ;;(set-face-attribute 'default nil :font "hack nerd font mono-14")
-       (set-face-attribute 'default nil :font "jetbrains mono-14")
-       )
-      (t (set-face-attribute 'default nil :font "bitstream vera sans mono-12")))
+;; macOS and Linux get their fonts from font-setup, below.
+(when (eq window-system 'w32)
+  (set-face-attribute 'default nil :font "-*-Consolas-medium-r-*-*-*-120-*-*-*-*-*-*"))
 
 (setq-default line-spacing 0)
 
@@ -1392,6 +1385,19 @@ end tell
 	(insert
 	 (propertize str 'font-lock-face `(:family ,ff))               ff "\n"
 	 (propertize str 'font-lock-face `(:family ,ff :slant italic)) ff "\n"))))))
+
+;; The same fonts on macOS and Linux, so tmux-powerline arrows and Nerd Font
+;; icons line up in terminals inside Emacs. A local package under
+;; lisp/font-setup/. See its README.
+(use-package font-setup
+  :ensure nil
+  :load-path (lambda () (list (expand-file-name "lisp/font-setup" emacs-root)))
+  :if (memq system-type '(darwin gnu/linux))
+  :demand t
+  :custom
+  (font-setup-default-height (if (eq system-type 'darwin) 140 120))
+  :config
+  (font-setup-enable))
 
 (use-package whitespace
   :ensure nil
