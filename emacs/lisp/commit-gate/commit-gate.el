@@ -1,6 +1,6 @@
 ;;; commit-gate.el --- Record that a commit gate was approved -*- lexical-binding: t; -*-
 
-;; SPDX-License-Identifier: GPL-3.0-or-later
+;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 ;;; Commentary:
 ;;

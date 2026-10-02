@@ -1,6 +1,6 @@
 ;;; compile-packages-tests.el --- Tests for the local-package build -*- lexical-binding: t; -*-
 
-;; SPDX-License-Identifier: GPL-3.0-or-later
+;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 ;;; Commentary:
 ;;

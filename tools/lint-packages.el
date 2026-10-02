@@ -1,6 +1,6 @@
 ;;; lint-packages.el --- Lint packages.el for a missing :ensure -*- lexical-binding: t; -*-
 
-;; SPDX-License-Identifier: GPL-3.0-or-later
+;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 ;;; Commentary:
 ;;

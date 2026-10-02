@@ -1,6 +1,6 @@
 ;;; commit-gate-tests.el --- Tests for the commit-gate accept recorder -*- lexical-binding: t; -*-
 
-;; SPDX-License-Identifier: GPL-3.0-or-later
+;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 ;;; Commentary:
 ;;

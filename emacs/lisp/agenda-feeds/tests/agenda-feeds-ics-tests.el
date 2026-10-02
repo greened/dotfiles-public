@@ -1,6 +1,6 @@
 ;;; agenda-feeds-ics-tests.el --- Tests for the iCalendar reader -*- lexical-binding: t; -*-
 
-;; SPDX-License-Identifier: GPL-3.0-or-later
+;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 ;;; Commentary:
 ;;

@@ -1,6 +1,6 @@
 ;;; lint-packages-tests.el --- Tests for the packages.el lint -*- lexical-binding: t; -*-
 
-;; SPDX-License-Identifier: GPL-3.0-or-later
+;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 ;;; Commentary:
 ;;
