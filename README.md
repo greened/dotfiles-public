@@ -196,6 +196,31 @@ the Nerd Fonts release. It checks the archive's sha256 before it installs
 anything. To be asked again after a no, delete `~/.emacs.d/font-setup-declined`.
 `emacs/lisp/font-setup/README.md` has the details and the options.
 
+## tmux status bar
+
+The tmux plugin tmux-powerline draws the status bar. `tmux/tmux.conf` pins it
+to the `v3.2.0` tag through tpm and sets no status formats of its own. `link.sh`
+deploys two files into `~/.config/tmux-powerline/`:
+
+- `tmux/tmux-powerline-config.sh` becomes `config.sh`. It is the v3.2.0
+  generated config with local edits: the theme name, and the session,
+  hostname, date and time formats with their icons.
+- `tmux/tmux-powerline-theme.sh` becomes `themes/my-theme.sh`. The name must
+  match `TMUX_POWERLINE_THEME` in the config.
+
+The theme puts the session on the left, and the date, time and host on the
+right. Each window is a powerline pill. The active window is bright blue and
+bold, with a marker before its index and a zoom marker when its pane is
+zoomed. A window with activity turns amber, and a window that rang the bell
+turns red and shows a bell. `tmux.conf` turns on `monitor-activity` for this.
+The segments use only tmux formats and `date`, since the bar redraws every
+second. The glyphs need the fonts above.
+
+tpm does not move an existing checkout to a new pin. After a pin change,
+remove that plugin's directory under `~/.tmux/plugins/`: `tpm`,
+`tmux-sensible` or `tmux-powerline`. Then reload `~/.tmux.conf`, which
+clones tpm again if it is gone, and press `prefix I` to install the others.
+
 ## Deployment model
 
 `~/.bashrc` and `~/.bash_profile` are written as **real files that source** the

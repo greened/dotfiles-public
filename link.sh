@@ -14,6 +14,10 @@ OVERLAYS="$(dirname "$PUB")/dotfiles-overlays"
 # script never touches.
 export GCOVERLAYS="$HOME/.gitconfig.overlays"
 export DOTFILES_LINK_LIB="$PUB/link-lib.sh"
+# Every directory that `link' writes into, for the stale-link check below.
+DOTFILES_LINKED="$(mktemp)"
+export DOTFILES_LINKED
+trap 'rm -f "$DOTFILES_LINKED"' EXIT
 . "$DOTFILES_LINK_LIB"
 
 # --- base files (generic; usable on their own) ---
@@ -78,6 +82,11 @@ if [ "$(uname)" = Darwin ]; then
 fi
 
 link "$PUB/tmux/tmux.conf"       "$HOME/.tmux.conf"
+# An old install linked tpm into this repo. tmux.conf now clones it.
+unlink_managed "$HOME/.tmux/plugins/tpm"
+# The theme name here must match TMUX_POWERLINE_THEME in the config.
+link "$PUB/tmux/tmux-powerline-config.sh" "$HOME/.config/tmux-powerline/config.sh"
+link "$PUB/tmux/tmux-powerline-theme.sh"  "$HOME/.config/tmux-powerline/themes/my-theme.sh"
 link "$PUB/ssh/config"           "$HOME/.ssh/config"
 link "$PUB/gnupg/gpg-agent.conf" "$HOME/.gnupg/gpg-agent.conf"
 link "$PUB/dircolors/dir_colors" "$HOME/.dir_colors"
@@ -113,7 +122,10 @@ while IFS= read -r l; do
     "$PUB"/*|"$OVERLAYS"/*|*/lib/dotfiles/*|*/lib/dotfiles-overlays/*|lib/dotfiles/*|lib/dotfiles-overlays/*)
       if [ ! -e "$l" ]; then echo "!! STALE LINK (bug): $l -> $t" >&2; bad=$((bad + 1)); fi ;;
   esac
-done < <(find "$HOME" -maxdepth 2 -type l 2>/dev/null)
+done < <({ find "$HOME" -maxdepth 2 -type l
+            sort -u "$DOTFILES_LINKED" | while IFS= read -r d; do
+              find "$d/" -maxdepth 1 -type l
+            done; } 2>/dev/null | sed 's#//*#/#g' | sort -u)
 if [ "$bad" -ne 0 ]; then
   echo "!! $bad stale link(s) into the dotfiles tree — an overlay link script is missing coverage" >&2
 else

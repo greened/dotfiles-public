@@ -58,6 +58,9 @@ _dot_parent_ok() {
 
 link() {  # src dest — symlink dest -> src (backs up / replaces whatever is there)
   local src="$1" dest="$2"
+  # Record the directory before any skip, so a stale-link sweep over
+  # $DOTFILES_LINKED covers it even when the source is gone.
+  [ -n "${DOTFILES_LINKED:-}" ] && dirname "$dest" >> "$DOTFILES_LINKED"
   [ -e "$src" ] || { echo "   warn: missing $src (skip $(basename "$dest"))" >&2; return 0; }
   _dot_parent_ok "$dest" || return 1
   _dot_backup "$dest"
