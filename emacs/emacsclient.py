@@ -51,6 +51,10 @@ def build_args(passthrough, emacsclient, socket_path, ssh, hostname, user):
   if any(a in ('-e', '--eval') or a.startswith('--eval=') for a in passthrough):
     return args + list(passthrough)
 
+  # No file to open: pass only the socket, and emacsclient reports the error.
+  if not passthrough:
+    return args
+
   rest = list(passthrough)
   file = rest.pop()                   # last arg is the file to open
   args += rest                        # remaining flags (e.g. -n)

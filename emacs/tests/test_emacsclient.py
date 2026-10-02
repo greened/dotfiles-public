@@ -8,9 +8,12 @@ The environment is passed in rather than patched, so a case states the host it
 describes instead of mutating os.environ and hoping the next case restores it.
 """
 
+import contextlib
 import importlib.util
+import io
 import pathlib
 import unittest
+from unittest import mock
 
 WRAPPER = pathlib.Path(__file__).resolve().parent.parent / 'emacsclient.py'
 
@@ -114,6 +117,78 @@ class EvalIsPassedThroughWhole(unittest.TestCase):
   def test_a_form_naming_a_file_is_not_rewritten(self):
     self.assertEqual(build(['-e', '(find-file "/tmp/f.txt")'], ssh=True),
                      PREFIX + ['-e', '(find-file "/tmp/f.txt")'])
+
+
+class NoArguments(unittest.TestCase):
+  """With nothing to open, the command is the socket alone."""
+
+  def test_local(self):
+    self.assertEqual(build([]), PREFIX)
+
+  def test_remote(self):
+    self.assertEqual(build([], ssh=True), PREFIX)
+
+
+class EnvironmentDecides(unittest.TestCase):
+  """The inputs `main' reads from the host.  Each case replaces os.environ
+  whole, so the caller's own SSH_CLIENT and HOME cannot leak in."""
+
+  def env(self, **values):
+    return mock.patch.dict('os.environ', values, clear=True)
+
+  def test_no_ssh_client_is_local(self):
+    with self.env(HOME='/home/tester'):
+      self.assertFalse(emacsclient.ssh_running())
+
+  def test_ssh_client_set_is_remote(self):
+    with self.env(HOME='/home/tester', SSH_CLIENT='10.0.0.1 5555 22'):
+      self.assertTrue(emacsclient.ssh_running())
+
+  def test_empty_ssh_client_still_counts_as_remote(self):
+    # Presence decides, not the value.
+    with self.env(HOME='/home/tester', SSH_CLIENT=''):
+      self.assertTrue(emacsclient.ssh_running())
+
+  def test_socket_lives_under_home(self):
+    with self.env(HOME='/home/tester'):
+      self.assertEqual(emacsclient.default_socket(), SOCKET)
+
+  def test_client_found_on_path(self):
+    with mock.patch('shutil.which', return_value='/opt/bin/emacsclient'):
+      self.assertEqual(emacsclient.default_emacsclient(), '/opt/bin/emacsclient')
+
+  def test_client_falls_back_when_not_on_path(self):
+    with mock.patch('shutil.which', return_value=None):
+      self.assertEqual(emacsclient.default_emacsclient(), CLIENT)
+
+
+class MainRunsTheDecision(unittest.TestCase):
+  """`main' runs what `build_args' returns.  subprocess.run is stubbed, so the
+  case records the command and nothing reaches a socket."""
+
+  def run_main(self, argv, **env):
+    env.setdefault('HOME', '/home/tester')
+    with mock.patch.dict('os.environ', env, clear=True), \
+         mock.patch('shutil.which', return_value=CLIENT), \
+         mock.patch('socket.gethostname', return_value='testhost'), \
+         mock.patch('getpass.getuser', return_value='tester'), \
+         mock.patch('subprocess.run') as run, \
+         contextlib.redirect_stdout(io.StringIO()):
+      emacsclient.main(argv)
+    run.assert_called_once()
+    return run.call_args.args[0]
+
+  def test_local_drops_the_script_name(self):
+    self.assertEqual(self.run_main(['emacsclient.py', '/tmp/f.txt']),
+                     PREFIX + ['/tmp/f.txt'])
+
+  def test_remote_rewrites_from_the_environment(self):
+    self.assertEqual(self.run_main(['emacsclient.py', '-n', '/tmp/f.txt'],
+                                   SSH_CLIENT='10.0.0.1 5555 22'),
+                     PREFIX + ['-n', '/scp:tester@testhost:/tmp/f.txt'])
+
+  def test_no_arguments_runs_the_socket_alone(self):
+    self.assertEqual(self.run_main(['emacsclient.py']), PREFIX)
 
 
 if __name__ == '__main__':
