@@ -1057,10 +1057,39 @@ class CommittedScript(unittest.TestCase):
 class Config(unittest.TestCase):
 
   def test_push_trust_is_a_normalized_list(self):
-    a = self.write('mac-socket /x\npush-trust git@example.com:o/one.git\n')
-    b = self.write('push-trust https://example.com/o/two\n')
+    a = self.write('mac-socket /x\nrepo https://example.com/o/one\n'
+                   'push-trust git@example.com:o/one.git\n')
+    b = self.write('repo git@example.com:o/two.git\n'
+                   'push-trust https://example.com/o/two\n')
     self.assertEqual(rs.parse_config([a, b]).trust,
                      {'example.com/o/one', 'example.com/o/two'})
+
+  def test_push_trust_with_no_repo_line_is_an_error(self):
+    path = self.write('mac-socket /x\nrepo git@example.com:o/one.git\n'
+                      'push-trust git@example.com:o/onee.git\n')
+    with self.assertRaisesRegex(rs.Error,
+                                r'repos\.list:3: push-trust names no repo'):
+      rs.parse_config([path])
+
+  def test_leave_with_no_repo_line_is_an_error(self):
+    path = self.write('mac-socket /x\nrepo git@example.com:o/one.git\n'
+                      'leave git@example.com:o/onee.git feat\n')
+    with self.assertRaisesRegex(rs.Error, r'repos\.list:3: leave names no repo'):
+      rs.parse_config([path])
+
+  def test_after_with_no_repo_line_is_an_error(self):
+    path = self.write('mac-socket /x\nrepo git@example.com:o/one.git\n'
+                      'after git@example.com:o/onee.git vm make\n')
+    with self.assertRaisesRegex(rs.Error, r'repos\.list:3: after names no repo'):
+      rs.parse_config([path])
+
+  def test_a_repo_line_in_a_later_overlay_satisfies_an_earlier_trust(self):
+    a = self.write('mac-socket /x\npush-trust git@example.com:o/one.git\n'
+                   'leave git@example.com:o/one.git feat\n')
+    b = self.write('repo https://example.com/o/one\n')
+    cfg = rs.parse_config([a, b])
+    self.assertEqual(cfg.trust, {'example.com/o/one'})
+    self.assertEqual(cfg.leave, {('example.com/o/one', 'feat')})
 
   def write(self, text, name='repos.list'):
     d = tempfile.mkdtemp()

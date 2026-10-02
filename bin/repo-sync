@@ -38,6 +38,9 @@ Configuration is `<overlay>/repo-sync/repos.list` in each overlay, read in
                                            the --push approval, not the gate
     after        <url> <vm|mac> <argv...>  run in the clone after it moves
 
+A `leave`, `push-trust` or `after` URL must also have a `repo` line, in any
+overlay.
+
 Exit status: 0 clean, 1 questions for a human, 2 error.
 """
 
@@ -272,6 +275,17 @@ class Config:
     self.leave = {(norm(u, w), b) for u, b, w in self.raw_leave}
     self.after = [(norm(u, w), m, argv) for u, m, argv, w in self.raw_after]
     self.trust = {norm(u, w) for u, w in self.raw_trust}
+
+    # A leave, push-trust or after URL that names no repo line is a typo, and
+    # it would otherwise fail silently.
+    known = set(self.repos)
+    for kw, u, w in ([('leave', u, w) for u, _, w in self.raw_leave]
+                     + [('push-trust', u, w) for u, w in self.raw_trust]
+                     + [('after', u, w) for u, _, _, w in self.raw_after]):
+      k = norm(u, w)
+      if k not in known:
+        raise Error('config: %s: %s names no repo line: %s (%s)'
+                    % (w, kw, u, k))
     return self
 
 
