@@ -380,6 +380,66 @@ returned is a synchronous one."
     (commit-gate-warn-if-misnamed)
     (should-not (local-variable-p 'header-line-format))))
 
+;;; The banner on a real gate
+
+(ert-deftest commit-gate-labels-each-git-dir-shape ()
+  "The main checkout, a worktree, a `git dev' repo and a submodule."
+  (should (equal (commit-gate-repo-label "/h/dotfiles/.git/CLAUDE_COMMIT_MSG")
+                 "dotfiles"))
+  (should (equal (commit-gate-repo-label
+                  "/h/dotfiles/.git/worktrees/wt/CLAUDE_COMMIT_MSG")
+                 "dotfiles, worktree wt"))
+  (should (equal (commit-gate-repo-label
+                  "/h/prevue/.prevue.git/worktrees/wt/CLAUDE_COMMIT_MSG")
+                 "prevue, worktree wt"))
+  (should (equal (commit-gate-repo-label "/h/srv/core.git/CLAUDE_COMMIT_MSG")
+                 "core"))
+  (should (equal (commit-gate-repo-label
+                  "/h/mono/.git/modules/a/modules/llvm/CLAUDE_COMMIT_MSG")
+                 "mono, submodule llvm"))
+  (should (equal (commit-gate-repo-label
+                  "/h/mono/.git/modules/llvm/worktrees/wt/CLAUDE_COMMIT_MSG")
+                 "mono, submodule llvm, worktree wt"))
+  (should (equal (commit-gate-repo-label
+                  "/scp:u@vm:/h/dotfiles/.git/CLAUDE_COMMIT_MSG")
+                 "dotfiles"))
+  (should-not (commit-gate-repo-label "/tmp/CLAUDE_COMMIT_MSG"))
+  (should-not (commit-gate-repo-label "CLAUDE_COMMIT_MSG")))
+
+(ert-deftest commit-gate-banner-names-the-repo-and-both-keys ()
+  "The two keys are one apart and do opposite things, so both are named."
+  (commit-gate-t--with-name "/h/dotfiles/.git/worktrees/wt/CLAUDE_COMMIT_MSG"
+    (commit-gate-show-banner)
+    (should (string-match-p "dotfiles, worktree wt" header-line-format))
+    (should (string-match-p "C-x # approves" header-line-format))
+    (should (string-match-p "C-x k discards" header-line-format))))
+
+(ert-deftest commit-gate-banner-shows-a-percent-sign-as-written ()
+  "A bare % in the header line is a format code and would be eaten.
+`format-mode-line' renders nothing in batch, so this reads the escape."
+  (commit-gate-t--with-name "/h/50%off/.git/CLAUDE_COMMIT_MSG"
+    (commit-gate-show-banner)
+    (should (string-match-p "for 50%%off\\." header-line-format))))
+
+(ert-deftest commit-gate-banner-still-labels-a-gate-outside-a-repo ()
+  "The keys matter more than the name, so a nameless gate keeps them."
+  (commit-gate-t--with-name "/tmp/CLAUDE_COMMIT_MSG"
+    (commit-gate-show-banner)
+    (should (string-match-p "\\`Commit gate\\. C-x # approves"
+                            header-line-format))))
+
+(ert-deftest commit-gate-banner-skips-a-near-miss-and-a-stranger ()
+  "A near miss keeps its warning, and other files keep their header."
+  (commit-gate-t--with-name "/h/x/.git/CLAUDE_COMMIT_MSG.txt"
+    (commit-gate-show-banner)
+    (should-not (local-variable-p 'header-line-format)))
+  (commit-gate-t--with-name "/h/x/.git/COMMIT_EDITMSG"
+    (commit-gate-show-banner)
+    (should-not (local-variable-p 'header-line-format)))
+  (with-temp-buffer
+    (commit-gate-show-banner)
+    (should-not (local-variable-p 'header-line-format))))
+
 ;;; Arming it
 
 (ert-deftest commit-gate-arms-and-reports-itself ()
@@ -408,15 +468,16 @@ twice and make the count meaningless. Measured rather than assumed."
           (should (equal n 1))))
     (advice-remove 'server-done #'commit-gate-record-accept)))
 
-(ert-deftest commit-gate-arming-installs-the-near-miss-warning ()
-  "Once, however often the configuration is reloaded."
+(ert-deftest commit-gate-arming-installs-both-header-lines ()
+  "Once each, however often the configuration is reloaded."
   (let ((server-visit-hook nil))
     (unwind-protect
         (progn
           (commit-gate-arm)
           (commit-gate-arm)
-          (should (equal server-visit-hook
-                         '(commit-gate-warn-if-misnamed))))
+          (should (equal (sort (copy-sequence server-visit-hook) #'string<)
+                         '(commit-gate-show-banner
+                           commit-gate-warn-if-misnamed))))
       (advice-remove 'server-done #'commit-gate-record-accept))))
 
 ;;; commit-gate-tests.el ends here

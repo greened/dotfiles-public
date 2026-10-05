@@ -69,6 +69,10 @@
 ;; gets a buffer that looks like a gate and records nothing, so every approval
 ;; there reads as a dismissal. The header line of that buffer says so while he
 ;; can still act on it.
+;;
+;; A real gate is labelled too. Its header line names the repository and the
+;; two keys. He kills a buffer he cannot identify, and `C-x k' discards the
+;; message as quietly as `C-x #' approves it.
 
 ;;; Code:
 
@@ -124,6 +128,43 @@ for `server-visit-hook', because the harm needs a client that waits."
 because the file is not named %s." commit-gate-file-name)))
       (setq-local header-line-format (propertize text 'face 'warning))
       (message "%s" text))))
+
+(defun commit-gate-repo-label (file)
+  "Name the repository of the gate at FILE, or nil when the path names none.
+The gate sits in the git directory, so the path alone gives the name. Asking
+git would block on a TRAMP gate. A worktree or a submodule is named too."
+  (let ((parts (split-string
+                (or (file-name-directory (file-local-name file)) "") "/" t))
+        prev repo after)
+    (while parts
+      (let ((part (pop parts)))
+        (when (string-suffix-p ".git" part)
+          (setq repo (if (equal part ".git")
+                         prev
+                       (and (string-match "\\`\\.?\\(.+\\)\\.git\\'" part)
+                            (match-string 1 part)))
+                after parts))
+        (setq prev part)))
+    (when repo
+      (let* ((wt (cadr (member "worktrees" after)))
+             (mods (seq-take-while (lambda (p) (not (equal p "worktrees")))
+                                   after)))
+        (concat repo
+                (and (equal (car mods) "modules")
+                     (concat ", submodule " (car (last mods))))
+                (and wt (concat ", worktree " wt)))))))
+
+(defun commit-gate-show-banner ()
+  "Name the repository and the keys in the header line of a gate.
+Does nothing unless the current buffer is `commit-gate-buffer-p'. Written
+for `server-visit-hook'."
+  (when (commit-gate-buffer-p)
+    (let* ((repo (ignore-errors (commit-gate-repo-label (buffer-file-name))))
+           (text (format "Commit gate%s. C-x # approves. C-x k discards."
+                         (if repo (concat " for " repo) ""))))
+      ;; A % in the header line is a format code, and a path can hold one.
+      (setq-local header-line-format
+                  (propertize (string-replace "%" "%%" text) 'face 'success)))))
 
 (defun commit-gate--sentinel-for (file)
   "The sentinel path for the gate at FILE."
@@ -250,11 +291,12 @@ A nil result means UNPROVEN. It does not mean the message was refused."
   (and (advice-member-p #'commit-gate-record-accept 'server-done) t))
 
 (defun commit-gate-arm ()
-  "Install the accept recorder on `server-done', and the near-miss warning.
+  "Install the accept recorder on `server-done', and the two header lines.
 Adding the same function twice does not stack a second copy, so this is safe
 to re-run when the configuration is reloaded."
   (advice-add 'server-done :before #'commit-gate-record-accept)
-  (add-hook 'server-visit-hook #'commit-gate-warn-if-misnamed))
+  (add-hook 'server-visit-hook #'commit-gate-warn-if-misnamed)
+  (add-hook 'server-visit-hook #'commit-gate-show-banner))
 
 (provide 'commit-gate)
 
