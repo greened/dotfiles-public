@@ -69,6 +69,13 @@ class RemoteShell(unittest.TestCase):
     self.assertEqual(build(['-n', '/tmp/f.txt'], ssh=True),
                      PREFIX + ['-n', '/scp:tester@testhost:/tmp/f.txt'])
 
+  def test_a_flag_alone_is_not_taken_for_a_file(self):
+    self.assertEqual(build(['-n'], ssh=True), PREFIX + ['-n'])
+
+  def test_a_dash_file_after_double_dash_is_still_rewritten(self):
+    self.assertEqual(build(['--', '-f.txt'], ssh=True),
+                     PREFIX + ['--', '/scp:tester@testhost:-f.txt'])
+
 
 class AlreadyTramp(unittest.TestCase):
   """A path that carries a TRAMP prefix is never wrapped again.
