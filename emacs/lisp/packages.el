@@ -4315,6 +4315,15 @@ Confluence account id.  Idempotent -- safe to re-run after an overlay sets
   ;; Project the central `my/people' map into gazette's @alias->Confluence view.
   :config (my/project-people))
 
+(use-package tokenomics
+  ;; Claude Code token cost by any field, from `tokenomics web --json'.
+  ;; Local :try-local checkout under ~/projects, like gazette. The package
+  ;; lives in the repo's emacs/ dir. Where the transcripts live is
+  ;; per-machine, so an overlay sets `tokenomics-command'.
+  :ensure (:fetcher github :repo "greened/tokenomics" :try-local t
+           :files ("emacs/tokenomics.el"))
+  :commands tokenomics)
+
 ;; Slack.  This is the generic, workspace-agnostic setup -- install, settings,
 ;; the README keybindings, and auto-start -- so Slack is usable regardless of
 ;; which overlays are active (work or personal).  Each workspace's
