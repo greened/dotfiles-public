@@ -89,6 +89,7 @@ SSH_BASE = 'ssh ' + SSH_OPTIONS
 SHA_RE = re.compile(r'^[0-9a-f]{40}$')
 DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
 CONTROL_RE = re.compile(r'[\x00-\x1f\x7f-\x9f]')
+TO_URL_RE = re.compile(r'^To \S+$')
 B64_RE = re.compile(r'^[A-Za-z0-9+/=]*$')
 WIP_RE = re.compile(r'(?i)^wip\b')
 SAFE_PATH_RE = re.compile(r'^[A-Za-z0-9_./+-]+$')
@@ -173,6 +174,29 @@ def last_line(r):
              or 'Permission denied' in l or 'ERROR' in l]
   pick = telling[0] if telling else (lines[-1] if lines else 'exit %s' % r.rc)
   return clean(pick, 200)
+
+
+def push_refusal(r):
+  """Why a push was refused, from git's own lines.
+  A refused ref ends with "failed to push some refs", and the cause sits
+  above it: a `! [rejected]` line, `remote:` lines or hook output. The
+  rejection goes first, because a verbose remote can bury it."""
+  if r.timed_out:
+    return 'timed out'
+  lines = [l.strip() for l in r.err.splitlines() if l.strip()]
+  # A transport failure has no rejected ref, and last_line already reads it.
+  if any(l.startswith('fatal:') for l in lines):
+    return last_line(r)
+  refs = [l for l in lines if l.startswith('! [')]
+  rest = [l for l in lines
+          if not l.startswith(('! [', 'hint:'))
+          and not TO_URL_RE.match(l)
+          and 'failed to push some refs' not in l
+          and l != 'remote:']
+  why = refs + rest
+  if not why:
+    return last_line(r)
+  return clean('; '.join(why[:5]), 300)
 
 
 # ---------------------------------------------------------------- urls
@@ -660,7 +684,7 @@ def do_action(a, inv, job):
     r = git(['push', 'origin', '%s:refs/heads/%s' % (a['to'], b)], c['top'],
             env, timeout=timeout)
     res['ok'] = r.ok
-    res['msg'] = 'pushed' if r.ok else 'push refused: ' + last_line(r)
+    res['msg'] = 'pushed' if r.ok else 'push refused: ' + push_refusal(r)
     return res
   if info['tip'] == a['to']:
     res.update(ok=True, msg='already there')

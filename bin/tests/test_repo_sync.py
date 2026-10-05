@@ -1036,6 +1036,63 @@ class LastLine(unittest.TestCase):
     self.assertEqual(rs.last_line(rs.Result(1, '', 'one\ntwo\n\n')), 'two')
 
 
+class PushRefusal(unittest.TestCase):
+
+  def test_a_remote_rejection_keeps_the_remote_lines(self):
+    r = rs.Result(1, '', 'remote: error: GH006: Protected branch update '
+                  'failed for refs/heads/main.\nremote:\n'
+                  'To github.com:me/repo.git\n'
+                  ' ! [remote rejected] main -> main (protected branch hook '
+                  'declined)\n'
+                  "error: failed to push some refs to 'github.com:me/repo'\n")
+    self.assertEqual(
+        rs.push_refusal(r),
+        '! [remote rejected] main -> main (protected branch hook '
+        'declined); remote: error: GH006: Protected branch update failed '
+        'for refs/heads/main.')
+
+  def test_the_rejection_survives_a_long_remote_banner(self):
+    banner = ''.join('remote: rule %d\n' % i for i in range(20))
+    r = rs.Result(1, '', banner + 'To github.com:me/repo.git\n'
+                  ' ! [remote rejected] main -> main (push declined)\n'
+                  "error: failed to push some refs to 'x'\n")
+    self.assertTrue(rs.push_refusal(r).startswith(
+        '! [remote rejected] main -> main (push declined)'))
+
+  def test_a_non_fast_forward_names_the_rejected_ref(self):
+    r = rs.Result(1, '', 'To github.com:me/repo.git\n'
+                  ' ! [rejected]        main -> main (fetch first)\n'
+                  "error: failed to push some refs to 'x'\n"
+                  'hint: Updates were rejected because the remote contains\n'
+                  'hint: work that you do not have locally.\n')
+    self.assertEqual(rs.push_refusal(r),
+                     '! [rejected]        main -> main (fetch first)')
+
+  def test_a_transport_failure_reads_like_last_line(self):
+    r = rs.Result(128, '', GITHUB_REFUSAL)
+    self.assertEqual(rs.push_refusal(r), rs.last_line(r))
+
+  def test_hook_output_starting_with_to_is_kept(self):
+    r = rs.Result(1, '', 'To push this, review it first\n'
+                  "error: failed to push some refs to 'x'\n")
+    self.assertEqual(rs.push_refusal(r), 'To push this, review it first')
+
+  def test_hook_output_survives_and_hints_do_not(self):
+    r = rs.Result(1, '', 'pre-push: refusing an unreviewed branch\n'
+                  "error: failed to push some refs to 'x'\n"
+                  'hint: Updates were rejected\n')
+    self.assertEqual(rs.push_refusal(r),
+                     'pre-push: refusing an unreviewed branch')
+
+  def test_only_boilerplate_falls_back_to_last_line(self):
+    r = rs.Result(1, '', "error: failed to push some refs to 'x'\n")
+    self.assertEqual(rs.push_refusal(r), rs.last_line(r))
+
+  def test_remote_text_loses_its_control_characters(self):
+    r = rs.Result(1, '', 'remote: \x1b[31mno\x1b[0m\n')
+    self.assertNotIn('\x1b', rs.push_refusal(r))
+
+
 class CommittedScript(unittest.TestCase):
 
   def test_drift_from_the_committed_copy_is_refused(self):
