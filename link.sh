@@ -87,6 +87,7 @@ unlink_managed "$HOME/.tmux/plugins/tpm"
 # The theme name here must match TMUX_POWERLINE_THEME in the config.
 link "$PUB/tmux/tmux-powerline-config.sh" "$HOME/.config/tmux-powerline/config.sh"
 link "$PUB/tmux/tmux-powerline-theme.sh"  "$HOME/.config/tmux-powerline/themes/my-theme.sh"
+link "$PUB/tmux/tmux-powerline-date.sh"   "$HOME/.config/tmux-powerline/segments/date.sh"
 link "$PUB/ssh/config"           "$HOME/.ssh/config"
 link "$PUB/gnupg/gpg-agent.conf" "$HOME/.gnupg/gpg-agent.conf"
 link "$PUB/dircolors/dir_colors" "$HOME/.dir_colors"

@@ -86,6 +86,7 @@
 # date.sh {
 	# date(1) format for the date. If you don't, for some reason, like ISO 8601 format you might want to have "%D" or "%m/%d/%Y".
 	export TMUX_POWERLINE_SEG_DATE_FORMAT=" %F"
+	# tmux-powerline-date.sh replaces this segment and reads TMUX_POWERLINE_SEG_TIME_TZ.
 # }
 
 # date_week.sh {
@@ -353,7 +354,7 @@
 	export TMUX_POWERLINE_SEG_TIME_FORMAT=" %H:%M"
 	# Change this to display a different timezone than the system default.
 	# Use TZ Identifier like "America/Los_Angeles"
-	# export TMUX_POWERLINE_SEG_TIME_TZ=""
+	export TMUX_POWERLINE_SEG_TIME_TZ="America/Chicago"
 # }
 
 # tmux_continuum_save.sh {
