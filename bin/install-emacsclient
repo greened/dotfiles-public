@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# Build one emacsclient from a GNU release and put it first on PATH.
+#
+#     ~/lib/dotfiles/bin/install-emacsclient 31.1
+#
+# The VM talks to the Mac's Emacs over a forwarded socket, and an emacsclient
+# older than that Emacs garbles a long reply. Pass the Mac's version. Only
+# emacsclient is built, into ~/.local/opt/emacs-VERSION, and
+# ~/.local/bin/emacsclient is linked to it.
+#
+# The tarball must carry a good signature from a key in SIGNERS. The keyring
+# comes from the same server as the tarball, so the pin is what authenticates
+# it. A release signed by another maintainer fails here. Check that key
+# against a second source before you add its fingerprint.
+set -euo pipefail
+
+# Primary key fingerprints.
+SIGNERS=(
+	8DC2487E51ABDD90B5C4753F0F56D0553B6D411B # Sean Whitton
+)
+
+die() { echo "install-emacsclient: $*" >&2; exit 1; }
+
+[[ $# -eq 1 ]] || die "usage: install-emacsclient VERSION"
+version=$1
+[[ $version =~ ^[0-9]+\.[0-9]+$ ]] || die "not a release version: $version"
+[[ $(uname -s) == Linux ]] || die "Linux only. The Mac runs its own Emacs"
+
+prefix=$HOME/.local/opt/emacs-$version
+url=https://ftp.gnu.org/gnu/emacs/emacs-$version.tar.xz
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+cd "$work"
+
+fetch() { curl -sSfL --proto =https --proto-redir =https --max-time 1800 --speed-limit 1000 --speed-time 60 "$@"; }
+fetch -o emacs.tar.xz "$url"
+fetch -o emacs.tar.xz.sig "$url.sig"
+fetch -o gnu-keyring.gpg https://ftp.gnu.org/gnu/gnu-keyring.gpg
+
+export GNUPGHOME=$work/gnupg
+mkdir -m 700 "$GNUPGHOME"
+gpg --batch --quiet --import gnu-keyring.gpg 2>/dev/null
+gpg --batch --status-fd 1 --verify emacs.tar.xz.sig emacs.tar.xz \
+	>verify.out 2>/dev/null || die "bad signature on emacs-$version.tar.xz"
+
+# Field 12 of VALIDSIG is the primary key fingerprint.
+signer=$(awk '$2 == "VALIDSIG" { print $12 }' verify.out)
+pinned=
+for fp in "${SIGNERS[@]}"; do
+	[[ $signer == "$fp" ]] && pinned=1
+done
+[[ -n $pinned ]] || die "emacs-$version is signed by ${signer:-no key}, which is not pinned"
+
+tar xf emacs.tar.xz
+cd "emacs-$version"
+./configure --prefix="$prefix" --without-all --without-x --without-ns \
+	--with-gnutls=no >../configure.log 2>&1 ||
+	{ tail -30 ../configure.log; die "configure failed"; }
+{ make -C lib -j8 && make -C lib-src -j8 emacsclient; } >../make.log 2>&1 ||
+	{ tail -30 ../make.log; die "make failed"; }
+
+mkdir -p "$prefix/bin" "$HOME/.local/bin"
+install -m 755 lib-src/emacsclient "$prefix/bin/emacsclient"
+ln -sfn "$prefix/bin/emacsclient" "$HOME/.local/bin/emacsclient"
+"$HOME/.local/bin/emacsclient" --version
