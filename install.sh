@@ -23,6 +23,8 @@ set -euo pipefail
 
 PUBLIC_URL="git@github.com:greened/dotfiles-public.git"
 LIB="${DOTFILES_LIB:-$HOME/lib}"; PUB="$LIB/dotfiles"; OVERLAYS="$LIB/dotfiles-overlays"
+# A git-project umbrella keeps the checkout in its default worktree.
+[ -f "$PUB/.git" ] && [ -d "$PUB/main" ] && PUB="$PUB/main"
 MANIFEST="${DOTFILES_MANIFEST:-$HOME/.config/dotfiles/overlays}"
 
 host="${1:-$(hostname -f 2>/dev/null || hostname)}"
@@ -34,7 +36,8 @@ echo ">> host: $host"
 get() {
   local url="$1" dir="$2" required="${3:-}" rc=0
   [ -n "$url" ] || { echo "   skip $(basename "$dir") (no URL)"; return 0; }
-  if [ -d "$dir/.git" ]; then git -C "$dir" pull --ff-only || rc=$?
+  # -e, not -d: .git is a file in a worktree, and a failed clone removes $dir.
+  if [ -e "$dir/.git" ]; then git -C "$dir" pull --ff-only || rc=$?
   else git clone "$url" "$dir" || { rc=$?; rm -rf "$dir"; }; fi
   if [ "$rc" -ne 0 ]; then
     if [ "$required" = required ]; then echo "!! failed to fetch required $(basename "$dir") — aborting" >&2; return "$rc"; fi

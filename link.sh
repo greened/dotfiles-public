@@ -6,7 +6,11 @@
 # a symlink still dangling into the dotfiles tree is a bug and is reported.
 set -eu
 PUB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-OVERLAYS="$(dirname "$PUB")/dotfiles-overlays"
+# The overlays sit beside the repo. When this checkout is a worktree of a
+# git-project umbrella, the umbrella is the repo, one level up.
+LIB="$(dirname "$PUB")"
+[ -f "$LIB/.git" ] && LIB="$(dirname "$LIB")"
+OVERLAYS="$LIB/dotfiles-overlays"
 # The GENERATED overlay manifest, rewritten from scratch below.  Named
 # .gitconfig.overlays and not .gitconfig.local because it is a build
 # artifact: anything hand-written in it is lost on the next run.

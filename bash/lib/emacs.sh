@@ -66,7 +66,7 @@ function setup_emacs {
     fi
 
     # EDITOR: emacsclient.py wrapper (dispatches on SSH_CLIENT); no -n so it blocks.
-    export EDITOR="$HOME/lib/dotfiles/emacs/emacsclient.py"
+    export EDITOR="$(realpath "$(dirname "${BASH_SOURCE[0]}")/../../emacs/emacsclient.py")"
     export VISUAL="$EDITOR"
 
 # Track directory, username, and cwd for remote logons.
