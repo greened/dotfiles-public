@@ -43,6 +43,9 @@ do_test() {
   echo "== test: packages.el declares :ensure everywhere"
   EMACS="$emacs" "$here/lint-packages-selftest.sh"
   echo
+  echo "== test: :try-local finds flat clones and umbrellas"
+  EMACS="$emacs" "$here/try-local-selftest.sh"
+  echo
   echo "== test: commit-gate accept recorder"
   EMACS="$emacs" "$here/emacs/lisp/commit-gate/check.sh"
   echo

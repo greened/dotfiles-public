@@ -115,6 +115,18 @@
 A single directory string is also accepted for backward compatibility.")
 
 ;; Get packages from local repositories first.
+(defun elpaca-recipe-try-local--checkout (candidate name)
+  "Return the checkout of package NAME at CANDIDATE, or nil.
+A flat clone is CANDIDATE itself. An umbrella holds .NAME.git and its
+worktrees, so use the main worktree, else master."
+  (cond ((not (file-directory-p candidate)) nil)
+        ((file-exists-p (expand-file-name (concat "." name ".git") candidate))
+         (seq-some (lambda (worktree)
+                     (let ((dir (expand-file-name worktree candidate)))
+                       (and (file-directory-p dir) dir)))
+                   '("main" "master")))
+        (t candidate)))
+
 (defun elpaca-recipe-try-local (recipe)
   "If RECIPE's :try-local keyword is non-nil, return :repo pointing at a
 local checkout of the package found under `local-repos-directory'
@@ -126,8 +138,8 @@ local checkout of the package found under `local-repos-directory'
                         local-repos-directory
                       (list local-repos-directory)))
               (local (seq-some (lambda (dir)
-                                 (let ((candidate (expand-file-name name dir)))
-                                   (and (file-directory-p candidate) candidate)))
+                                 (elpaca-recipe-try-local--checkout
+                                  (expand-file-name name dir) name))
                                dirs)))
     (list :repo local)))
 
