@@ -3,7 +3,7 @@
 #
 #     ./check.sh          # build, then test
 #     ./check.sh build    # byte-compile the local elisp packages
-#     ./check.sh test     # run the selftests
+#     ./check.sh test     # run the selftests, then each overlay's
 #
 # Split because gaffer drives `build' and `test' as separate steps and records
 # each result on the work item.  Run by hand it is the same two things.
@@ -63,6 +63,18 @@ do_test() {
   echo
   echo "== test: repo-sync decisions and moves"
   "$here/bin/check.sh"
+  # An overlay owns its tests and carries them in its own check.sh. These are
+  # the cloned overlays, not ones beside this checkout, so a worktree finds
+  # them too. $DOTFILES_OVERLAYS overrides the directory, and $DOTFILES_LIB
+  # moves it as it does for install.sh.
+  local lib="${DOTFILES_LIB:-$HOME/lib}"
+  local overlays="${DOTFILES_OVERLAYS:-$lib/dotfiles-overlays}" check
+  for check in "$overlays"/*/check.sh; do
+    [ -x "$check" ] || continue
+    echo
+    echo "== test: overlay $(basename "$(dirname "$check")")"
+    "$check" test
+  done
 }
 
 case "$what" in
