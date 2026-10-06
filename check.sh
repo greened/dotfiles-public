@@ -58,6 +58,9 @@ do_test() {
   echo "== test: term-launcher targets and key bindings"
   EMACS="$emacs" "$here/emacs/lisp/term-launcher/check.sh"
   echo
+  echo "== test: vterm-reconnect buffer choice and new sessions"
+  EMACS="$emacs" "$here/emacs/lisp/vterm-reconnect/check.sh"
+  echo
   echo "== test: emacsclient.py command line"
   "$here/emacs/check.sh"
   echo
