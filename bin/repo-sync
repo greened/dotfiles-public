@@ -390,7 +390,11 @@ def default_overlays():
   if env:
     return env
   repo = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
-  return os.path.join(os.path.dirname(repo), 'dotfiles-overlays')
+  lib = os.path.dirname(repo)
+  # In a git-project umbrella the umbrella is the repo, one level up.
+  if os.path.isfile(os.path.join(lib, '.git')):
+    lib = os.path.dirname(lib)
+  return os.path.join(lib, 'dotfiles-overlays')
 
 
 # ---------------------------------------------------------------- agent
