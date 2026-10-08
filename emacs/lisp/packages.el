@@ -1861,7 +1861,10 @@ end tell
   (add-hook 'vterm-mode-hook
             (lambda ()
               (set (make-local-variable 'buffer-face-mode-face) 'fixed-pitch)
-              (buffer-face-mode t))))
+              (buffer-face-mode t)
+              ;; Claude Code puts a no-break space after its prompt, which
+              ;; Emacs would underline. Show what the terminal drew.
+              (setq-local nobreak-char-display nil))))
 
 ;; Respawn a stale ssh vterm in one command (C-c R).  A "local but shareable"
 ;; package: a self-contained, publishable package that still lives inside
