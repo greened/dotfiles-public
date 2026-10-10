@@ -45,4 +45,24 @@ check yes "a vterm TRAMP opened" TERM=xterm-256color \
 check yes "ssh, no Emacs state" TERM=xterm-256color "$ssh"
 check yes "a tmux pane" TERM=screen-256color "$tmux" "$ssh"
 
+# check_host WANT DESCRIPTION VAR=VALUE...: expect the escape to name host WANT.
+check_host() {
+  local want="$1" what="$2" got
+  shift 2
+  got="$(env -i HOME="$HOME" PATH="$PATH" TERM=xterm-256color "$@" \
+    bash --norc --noprofile -c '
+    . "$1/bash/lib/emacs.sh"
+    vterm_prompt_end
+  ' _ "$here" | sed -n 's/^.*51;A[^@]*@\([^:]*\):.*$/\1/p')"
+  if [ "$got" = "$want" ]; then
+    echo "ok: $what"
+  else
+    echo "FAIL: $what: expected host $want, got $got"
+    fails=$((fails + 1))
+  fi
+}
+
+check_host "$(hostname)" "the host name by default"
+check_host my-alias "the host VTERM_TRAMP_HOST names" VTERM_TRAMP_HOST=my-alias
+
 [ "$fails" -eq 0 ]

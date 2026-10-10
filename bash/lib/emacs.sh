@@ -13,8 +13,11 @@ function vterm_printf {
     fi
 }
 
+# TRAMP keys connections by host name, so a host that Emacs reaches by an ssh
+# alias sets VTERM_TRAMP_HOST to that alias. Otherwise a tracked directory
+# opens a second connection.
 function vterm_prompt_end {
-    vterm_printf "51;A$(whoami)@$(hostname):$(pwd)"
+    vterm_printf "51;A$(whoami)@${VTERM_TRAMP_HOST:-$(hostname)}:$(pwd)"
 }
 
 function clear {
