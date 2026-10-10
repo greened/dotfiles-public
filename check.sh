@@ -37,6 +37,9 @@ do_test() {
   echo "== test: link guard"
   "$here/link-selftest.sh"
   echo
+  echo "== test: which shells get vterm's prompt escape"
+  "$here/prompt-selftest.sh"
+  echo
   echo "== test: the build finds every local package"
   EMACS="$emacs" "$here/compile-packages-selftest.sh"
   echo

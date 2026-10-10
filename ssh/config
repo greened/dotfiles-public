@@ -5,7 +5,6 @@ Include ~/lib/dotfiles-overlays/*/ssh/config
 
 Host *
   TCPKeepAlive yes
-  SendEnv INSIDE_EMACS
   StreamLocalBindUnlink yes
   ForwardAgent yes
   ForwardX11 yes

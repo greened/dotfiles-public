@@ -815,11 +815,9 @@ and a stale one looks exactly like an accurate one."
   :config
   (setq tramp-verbose 1)
   (setq tramp-default-method "ssh")
-  ;; Tolerates ANSI escapes trailing the prompt.  It exists because
-  ;; `vterm_prompt_end' was leaking into non-vterm shells: the guard around it
-  ;; in bash/lib/emacs.sh had been commented out, so EVERY remote prompt
-  ;; emitted an OSC escape.  Fixed at the source 2026-09-16, so this is no
-  ;; longer load-bearing for that host -- kept because other hosts may still
+  ;; Tolerates ANSI escapes trailing the prompt. bash/lib/emacs.sh keeps
+  ;; `vterm_prompt_end' out of TRAMP's TERM=dumb login shell, so this is not
+  ;; load-bearing for that host. It stays because other hosts may still
   ;; produce a decorated prompt.
   ;;
   ;; Without it, TRAMP's DEFAULT pattern never matched such a prompt, so it
@@ -906,8 +904,7 @@ and a stale one looks exactly like an accurate one."
 
 (setq tramp-default-method "ssh")
 ;; See the commentary on the same setting in the `tramp' use-package block
-;; above: this tolerates ANSI escapes after the prompt, a symptom whose cause
-;; (an unguarded `vterm_prompt_end' in bash/lib/emacs.sh) was fixed 2026-09-16.
+;; above: this tolerates ANSI escapes after the prompt.
 (setq tramp-shell-prompt-pattern "\\(?:^\\|\r\\)[^]#$%>\n]*#?[]#$%>].* *\\(^[\\[[0-9;]*[a-zA-Z] *\\)*")
 
 (setq vc-ignore-dir-regexp

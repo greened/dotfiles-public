@@ -46,21 +46,19 @@ if [ $(uname) = "SunOS" ]; then
 }
 
 function setup_emacs {
-    # Allow passing of vterm state through ssh.
-    if [[ -n "${LC_INSIDE_EMACS}" ]]; then
-        export INSIDE_EMACS="${LC_INSIDE_EMACS}"
-    elif [[ -n "${INSIDE_EMACS}" ]]; then
-        export LC_INSIDE_EMACS="${INSIDE_EMACS}"
-    fi
-
-    # Only inside vterm.  vterm_prompt_end emits an OSC escape on every
-    # prompt; unguarded it lands in PLAIN ssh and TRAMP sessions too, where
-    # nothing consumes it.  TRAMP then scans a prompt full of escapes and its
-    # default `tramp-shell-prompt-pattern' never matches, so it re-matches a
-    # growing buffer and spins in re_match_2_internal at 100% CPU, forever.
-    # Diagnosed 2026-09-16; `emacs -Q' hit it, a configured Emacs did not,
-    # because packages.el sets a prompt pattern that tolerates the escapes.
-    if [[ "$INSIDE_EMACS" = 'vterm' ]]; then
+    # vterm_prompt_end puts an OSC escape in every prompt, which TRAMP's login
+    # shell must never see: the default `tramp-shell-prompt-pattern' cannot
+    # match it, and TRAMP spins in re_match_2_internal without end. TRAMP logs
+    # in with TERM=dumb and M-x shell runs with it, so that test keeps both out.
+    #
+    # INSIDE_EMACS alone cannot select vterm. It never reaches a shell over
+    # ssh, because the VM's sshd does not accept it, nor a tmux pane whose
+    # server started outside vterm. So under ssh or tmux emit it anyway. A
+    # terminal that does not know the escape ignores it. A vterm that TRAMP
+    # opens says `vterm,tramp:...', hence the glob.
+    if [[ "$TERM" != dumb ]] &&
+       { [[ "$INSIDE_EMACS" = vterm* ]] ||
+         [[ -z "$INSIDE_EMACS" && -n "$SSH_CONNECTION$TMUX" ]]; }; then
         #PROMPT_COMMAND='echo -ne "\033]0;\h:\w\007"'
         PS1=$PS1'\[$(vterm_prompt_end)\]'
     fi
