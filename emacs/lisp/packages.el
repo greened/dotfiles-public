@@ -1874,6 +1874,13 @@ end tell
   :load-path (lambda () (list (expand-file-name "lisp/vterm-reconnect" emacs-root)))
   :bind ("C-c R" . vterm-reconnect-default))
 
+;; Read-only tail of a Claude Code session transcript, for viewing beside
+;; the vterm running the session. Local package, autoloaded on its command.
+(use-package claude-transcript
+  :ensure nil                           ; local package; do not let elpaca fetch
+  :load-path (lambda () (list (expand-file-name "lisp/claude-transcript" emacs-root)))
+  :commands claude-transcript-open)
+
 ;; (use-package multi-vterm
 ;;   :straight (:host github :repo "suonlight/multi-vterm" :branch "master"))
 

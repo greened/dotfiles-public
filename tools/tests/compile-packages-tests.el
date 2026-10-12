@@ -116,8 +116,8 @@ Add a name here when a package is added.
 If this fails, the derivation changed WHAT GETS BUILT, which is the one
 outcome a refactor of the input set must not have."
   (should (equal (cp-packages)
-                 '("agenda-feeds" "commit-gate" "font-setup" "llm-api-key"
-                   "term-launcher" "vterm-reconnect")))
+                 '("agenda-feeds" "claude-transcript" "commit-gate" "font-setup"
+                   "llm-api-key" "term-launcher" "vterm-reconnect")))
   (should (member "themes" (cp-candidate-dirs)))
   (should-not (member "themes" (cp-packages))))
 

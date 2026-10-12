@@ -67,6 +67,9 @@ do_test() {
   echo "== test: vterm-reconnect buffer choice and new sessions"
   EMACS="$emacs" "$here/emacs/lisp/vterm-reconnect/check.sh"
   echo
+  echo "== test: claude-transcript rendering and tail"
+  EMACS="$emacs" "$here/emacs/lisp/claude-transcript/check.sh"
+  echo
   echo "== test: emacsclient.py command line"
   "$here/emacs/check.sh"
   echo
