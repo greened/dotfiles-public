@@ -16,6 +16,9 @@
 ;;   - the record holds a time rather than a flag, so a reader can reject a
 ;;     leftover from an earlier gate.
 ;;
+;; In a run directory the sentinel holds the run's nonce instead. It is read
+;; when the buffer opens, and a malformed one refuses the approval.
+;;
 ;; The path tests set `buffer-file-name' directly instead of visiting a file.
 ;; A gate shown over TRAMP carries a remote prefix, and asserting that the
 ;; prefix survives must not need a host to connect to.
@@ -36,6 +39,36 @@
   `(with-temp-buffer
      (setq buffer-file-name ,name)
      ,@body))
+
+(defmacro commit-gate-t--visit (gate &rest body)
+  "Run BODY in a buffer visiting GATE, with its nonce read as on open."
+  (declare (indent 1))
+  `(with-current-buffer (find-file-noselect ,gate)
+     (unwind-protect
+         (progn (commit-gate-capture-nonce) ,@body)
+       (set-buffer-modified-p nil)
+       (kill-buffer))))
+
+(defconst commit-gate-t--nonce-a "0123456789abcdef0123456789abcdef"
+  "A well-formed nonce.")
+
+(defconst commit-gate-t--nonce-b "fedcba9876543210fedcba9876543210"
+  "A second well-formed nonce, for a later run.")
+
+(defun commit-gate-t--run-dir (dir nonce &optional text)
+  "Make a commit-land run directory under DIR for NONCE and return its gate.
+The `.nonce' file holds TEXT when given, else NONCE and a newline."
+  (let ((run (expand-file-name (concat ".git/claude-land/" nonce "/") dir)))
+    (make-directory run t)
+    (with-temp-file (expand-file-name ".nonce" run)
+      (insert (or text (concat nonce "\n"))))
+    (let ((gate (expand-file-name "CLAUDE_COMMIT_MSG" run)))
+      (with-temp-file gate (insert "a message\n"))
+      gate)))
+
+(defun commit-gate-t--contents (file)
+  "FILE's contents as a string."
+  (with-temp-buffer (insert-file-contents file) (buffer-string)))
 
 (defmacro commit-gate-t--in-dir (dir &rest body)
   "Run BODY with DIR bound to a fresh directory, removed afterwards.
@@ -94,12 +127,9 @@ compared a bare local path, never matched, and so recorded nothing."
   (commit-gate-t--in-dir dir
     (let ((gate (expand-file-name "CLAUDE_COMMIT_MSG" dir)))
       (with-temp-file gate (insert "a message\n"))
-      (with-current-buffer (find-file-noselect gate)
-        (unwind-protect
-            (progn
-              (commit-gate-record-accept)
-              (should (file-exists-p (concat gate ".closed"))))
-          (kill-buffer))))))
+      (commit-gate-t--visit gate
+        (commit-gate-record-accept)
+        (should (file-exists-p (concat gate ".closed")))))))
 
 (ert-deftest commit-gate-stamps-a-time-and-not-a-flag ()
   "A reader has to reject a sentinel older than its own gate, so the
@@ -108,8 +138,7 @@ sentinel has to say WHEN. An always-armed advice stamps leftovers."
     (let ((gate (expand-file-name "CLAUDE_COMMIT_MSG" dir))
           (before (float-time)))
       (with-temp-file gate (insert "a message\n"))
-      (with-current-buffer (find-file-noselect gate)
-        (unwind-protect (commit-gate-record-accept) (kill-buffer)))
+      (commit-gate-t--visit gate (commit-gate-record-accept))
       (with-temp-buffer
         (insert-file-contents (concat gate ".closed"))
         (let ((stamp (string-to-number (string-trim (buffer-string)))))
@@ -141,8 +170,7 @@ reader can rely on. The sentinel can be lost and this cannot."
     (let ((gate (expand-file-name "CLAUDE_COMMIT_MSG" dir))
           (before (floor (float-time))))
       (with-temp-file gate (insert "a message\n"))
-      (with-current-buffer (find-file-noselect gate)
-        (unwind-protect (commit-gate-record-accept) (kill-buffer)))
+      (commit-gate-t--visit gate (commit-gate-record-accept))
       (let ((stamp (commit-gate-accepted-p gate)))
         (should stamp)
         (should (>= stamp (1- before)))))))
@@ -153,8 +181,7 @@ landed, so the outcome goes in the record rather than nowhere."
   (commit-gate-t--in-dir dir
     (let ((gate (expand-file-name "CLAUDE_COMMIT_MSG" dir)))
       (with-temp-file gate (insert "a message\n"))
-      (with-current-buffer (find-file-noselect gate)
-        (unwind-protect (commit-gate-record-accept) (kill-buffer)))
+      (commit-gate-t--visit gate (commit-gate-record-accept))
       (with-temp-buffer
         (insert-file-contents (commit-gate--record-file gate))
         (goto-char (point-min))
@@ -222,6 +249,90 @@ so it must not be reachable by accident from a malformed record either."
       (write-region "gate somewhere\n" nil (commit-gate--record-file gate)
                     nil 'quiet)
       (should-not (commit-gate-accepted-p gate)))))
+
+;;; The run nonce
+
+(ert-deftest commit-gate-reads-the-nonce-at-open-and-writes-it-on-accept ()
+  "The sentinel names the run it approves, in the run's own directory."
+  (commit-gate-t--in-dir dir
+    (let* ((gate (commit-gate-t--run-dir dir commit-gate-t--nonce-a))
+           (run (file-name-directory gate)))
+      (commit-gate-t--visit gate
+        (should (equal commit-gate-nonce (cons 'nonce commit-gate-t--nonce-a)))
+        (should (equal (commit-gate-sentinel-file)
+                       (expand-file-name ".closed" run)))
+        (commit-gate-record-accept))
+      (should (equal (commit-gate-t--contents (expand-file-name ".closed" run))
+                     commit-gate-t--nonce-a))
+      (should-not (file-exists-p (concat gate ".closed")))
+      (should (string-match-p
+               (concat "^nonce " commit-gate-t--nonce-a "$")
+               (commit-gate-t--contents (commit-gate--record-file gate)))))))
+
+(ert-deftest commit-gate-an-older-buffer-keeps-its-own-nonce ()
+  "A buffer open before a second run must not approve that run. Neither a
+rewritten `.nonce', a revert nor a second visit changes what it writes."
+  (commit-gate-t--in-dir dir
+    (let* ((gate (commit-gate-t--run-dir dir commit-gate-t--nonce-a))
+           (run (file-name-directory gate)))
+      (commit-gate-t--visit gate
+        (with-temp-file (expand-file-name ".nonce" run)
+          (insert commit-gate-t--nonce-b "\n"))
+        (revert-buffer t t)
+        (commit-gate-capture-nonce)
+        (should (equal commit-gate-nonce (cons 'nonce commit-gate-t--nonce-a)))
+        (commit-gate-record-accept))
+      (should (equal (commit-gate-t--contents (expand-file-name ".closed" run))
+                     commit-gate-t--nonce-a)))))
+
+(ert-deftest commit-gate-falls-back-to-the-epoch-without-a-nonce ()
+  "An older commit-land writes no `.nonce' and waits on `<msg>.closed'."
+  (commit-gate-t--in-dir dir
+    (let ((gate (expand-file-name "CLAUDE_COMMIT_MSG" dir))
+          (before (floor (float-time))))
+      (with-temp-file gate (insert "a message\n"))
+      (commit-gate-t--visit gate
+        (should (eq commit-gate-nonce 'absent))
+        (commit-gate-record-accept))
+      (should-not (file-exists-p (expand-file-name ".closed" dir)))
+      (should (>= (string-to-number
+                   (commit-gate-t--contents (concat gate ".closed")))
+                  (1- before))))))
+
+(ert-deftest commit-gate-refuses-a-malformed-nonce ()
+  "No sentinel and no record, and the refusal says what is wrong and how to
+proceed."
+  (dolist (text (list (upcase commit-gate-t--nonce-a)
+                      (substring commit-gate-t--nonce-a 1)
+                      (concat commit-gate-t--nonce-a "\nextra\n")
+                      ""))
+    (commit-gate-t--in-dir dir
+      (let* ((gate (commit-gate-t--run-dir dir commit-gate-t--nonce-a text))
+             (run (file-name-directory gate)))
+        (commit-gate-t--visit gate
+          (let ((err (should-error (commit-gate-record-accept)
+                                   :type 'user-error)))
+            (should (string-match-p "\\.nonce is malformed" (cadr err)))
+            (should (string-match-p "C-x k to discard" (cadr err)))
+            (should (string-match-p "rerun commit-land" (cadr err))))
+          (should (string-match-p "Not approved" header-line-format)))
+        (should-not (file-exists-p (expand-file-name ".closed" run)))
+        (should-not (file-exists-p (concat gate ".closed")))
+        (should-not (commit-gate-accepted-p gate))))))
+
+(ert-deftest commit-gate-refuses-a-gate-whose-nonce-was-never-read ()
+  "Reading at `C-x #' instead would let an old buffer take a newer nonce."
+  (commit-gate-t--in-dir dir
+    (let ((gate (commit-gate-t--run-dir dir commit-gate-t--nonce-a)))
+      (with-current-buffer (find-file-noselect gate)
+        (unwind-protect
+            (let ((err (should-error (commit-gate-record-accept)
+                                     :type 'user-error)))
+              (should (string-match-p "no nonce was read" (cadr err)))
+              (should (string-match-p "rerun commit-land" (cadr err))))
+          (kill-buffer)))
+      (should-not (file-exists-p
+                   (expand-file-name ".closed" (file-name-directory gate)))))))
 
 ;;; The remote sentinel
 
@@ -342,6 +453,7 @@ returned is a synchronous one."
     (let* ((gate (concat "/scp:slow@dev:"
                          (expand-file-name "CLAUDE_COMMIT_MSG" dir)))
            (proc (commit-gate-t--with-name gate
+                   (setq commit-gate-nonce 'absent)
                    (commit-gate-record-accept)
                    (get-process "commit-gate-sentinel"))))
       (unwind-protect
@@ -349,6 +461,48 @@ returned is a synchronous one."
             (should (process-live-p proc))
             (should (commit-gate-accepted-p gate)))
         (delete-process proc)))))
+
+(defun commit-gate-t--remote-capture (gate)
+  "Read GATE's nonce over the shim, wait for it, and return the state."
+  (commit-gate-t--with-name gate
+    (commit-gate-capture-nonce)
+    (should (eq commit-gate-nonce 'pending))
+    (commit-gate-t--settle (get-process "commit-gate-nonce"))
+    commit-gate-nonce))
+
+(ert-deftest commit-gate-reads-a-remote-nonce-without-waiting ()
+  "The read goes over `ssh' like the write, so opening a gate never blocks
+on TRAMP. A missing file and a failed connection read differently."
+  (commit-gate-t--with-ssh-shim dir _argv
+    (let ((gate (commit-gate-t--run-dir dir commit-gate-t--nonce-a)))
+      (should (equal (commit-gate-t--remote-capture (concat "/scp:u@dev:" gate))
+                     (cons 'nonce commit-gate-t--nonce-a)))
+      (should (eq (car (commit-gate-t--remote-capture
+                        (concat "/scp:fail@dev:" gate)))
+                  'refused))
+      (delete-file (expand-file-name ".nonce" (file-name-directory gate)))
+      (should (eq (commit-gate-t--remote-capture (concat "/scp:u@dev:" gate))
+                  'absent)))))
+
+(ert-deftest commit-gate-refuses-a-remote-gate-still-reading ()
+  "A pending read has no nonce to write yet, so `C-x #' says to retry."
+  (commit-gate-t--with-name "/scp:u@dev:/r/.git/claude-land/n/CLAUDE_COMMIT_MSG"
+    (setq commit-gate-nonce 'pending)
+    (let ((err (should-error (commit-gate-record-accept) :type 'user-error)))
+      (should (string-match-p "still being read" (cadr err)))
+      (should (string-match-p "C-x # again" (cadr err))))))
+
+(ert-deftest commit-gate-writes-a-remote-nonce-to-the-run-directory ()
+  "The remote write carries the nonce to `.closed' beside the gate."
+  (commit-gate-t--with-ssh-shim dir _argv
+    (let* ((local (commit-gate-t--run-dir dir commit-gate-t--nonce-a))
+           (gate (concat "/scp:u@dev:" local))
+           (closed (expand-file-name ".closed" (file-name-directory local))))
+      (commit-gate--write-record gate "1000" commit-gate-t--nonce-a)
+      (commit-gate-t--settle
+       (commit-gate--spawn-remote gate "1000" commit-gate-t--nonce-a))
+      (should (equal (commit-gate-t--contents closed) commit-gate-t--nonce-a))
+      (should-not (file-exists-p (concat closed ".tmp"))))))
 
 ;;; A name that nearly matches
 
@@ -403,6 +557,15 @@ returned is a synchronous one."
   (should (equal (commit-gate-repo-label
                   "/scp:u@vm:/h/dotfiles/.git/CLAUDE_COMMIT_MSG")
                  "dotfiles"))
+  (should (equal (commit-gate-repo-label
+                  "/h/dotfiles/.git/claude-land/0a1b/CLAUDE_COMMIT_MSG")
+                 "dotfiles"))
+  (should (equal (commit-gate-repo-label
+                  "/h/dotfiles/.git/worktrees/wt/claude-land/0a1b/CLAUDE_COMMIT_MSG")
+                 "dotfiles, worktree wt"))
+  (should (equal (commit-gate-repo-label
+                  "/h/mono/.git/modules/llvm/claude-land/0a1b/CLAUDE_COMMIT_MSG")
+                 "mono, submodule llvm"))
   (should-not (commit-gate-repo-label "/tmp/CLAUDE_COMMIT_MSG"))
   (should-not (commit-gate-repo-label "CLAUDE_COMMIT_MSG")))
 
@@ -444,40 +607,45 @@ returned is a synchronous one."
 
 (ert-deftest commit-gate-arms-and-reports-itself ()
   "The reader probes for this before trusting any sentinel."
-  (unwind-protect
-      (progn
-        (advice-remove 'server-done #'commit-gate-record-accept)
-        (should-not (commit-gate-armed-p))
-        (commit-gate-arm)
-        (should (commit-gate-armed-p)))
-    (advice-remove 'server-done #'commit-gate-record-accept)))
+  (let ((server-visit-hook nil) (find-file-hook nil))
+    (unwind-protect
+        (progn
+          (advice-remove 'server-done #'commit-gate-record-accept)
+          (should-not (commit-gate-armed-p))
+          (commit-gate-arm)
+          (should (commit-gate-armed-p)))
+      (advice-remove 'server-done #'commit-gate-record-accept))))
 
 (ert-deftest commit-gate-arming-twice-does-not-stack ()
   "The configuration is reloaded often, and a doubled advice would stamp
 twice and make the count meaningless. Measured rather than assumed."
-  (unwind-protect
-      (progn
-        (advice-remove 'server-done #'commit-gate-record-accept)
-        (commit-gate-arm)
-        (commit-gate-arm)
-        (let ((n 0))
-          (advice-mapc (lambda (f _p)
-                         (when (eq f #'commit-gate-record-accept)
-                           (setq n (1+ n))))
-                       'server-done)
-          (should (equal n 1))))
-    (advice-remove 'server-done #'commit-gate-record-accept)))
+  (let ((server-visit-hook nil) (find-file-hook nil))
+    (unwind-protect
+        (progn
+          (advice-remove 'server-done #'commit-gate-record-accept)
+          (commit-gate-arm)
+          (commit-gate-arm)
+          (let ((n 0))
+            (advice-mapc (lambda (f _p)
+                           (when (eq f #'commit-gate-record-accept)
+                             (setq n (1+ n))))
+                         'server-done)
+            (should (equal n 1))))
+      (advice-remove 'server-done #'commit-gate-record-accept))))
 
 (ert-deftest commit-gate-arming-installs-both-header-lines ()
-  "Once each, however often the configuration is reloaded."
-  (let ((server-visit-hook nil))
+  "Once each, however often the configuration is reloaded, and the nonce
+read on both hooks that can open a gate."
+  (let ((server-visit-hook nil) (find-file-hook nil))
     (unwind-protect
         (progn
           (commit-gate-arm)
           (commit-gate-arm)
           (should (equal (sort (copy-sequence server-visit-hook) #'string<)
-                         '(commit-gate-show-banner
-                           commit-gate-warn-if-misnamed))))
+                         '(commit-gate-capture-nonce
+                           commit-gate-show-banner
+                           commit-gate-warn-if-misnamed)))
+          (should (equal find-file-hook '(commit-gate-capture-nonce))))
       (advice-remove 'server-done #'commit-gate-record-accept))))
 
 ;;; commit-gate-tests.el ends here

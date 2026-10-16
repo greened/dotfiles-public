@@ -6,7 +6,9 @@
 # This package decides whether a commit message was APPROVED or dismissed, and
 # the two look identical in every other artifact, so it is tested rather than
 # trusted. The tests cover the three properties it has to have: it stamps a
-# gate, it stamps nothing else, and the stamp is a time rather than a flag.
+# gate, it stamps nothing else, and the stamp names its run rather than being
+# a flag. That is the nonce read when the gate opened, or the time on an
+# older commit-land that writes no nonce.
 #
 # It also says whether an automated filter rewrote the draft before the gate
 # opened. That claim is tested in both directions, because an indicator that

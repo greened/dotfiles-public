@@ -295,4 +295,14 @@ the command falls back to rather than comparing against the live buffer."
       (let ((shown (get-buffer "*commit-gate scrub diff*")))
         (when shown (kill-buffer shown))))))
 
+;;; A gate in a run directory
+
+(ert-deftest commit-gate-scrub-finds-siblings-in-a-run-directory ()
+  "commit-land puts each run's gate in its own directory, and the filter
+writes its siblings beside the gate there."
+  (commit-gate-scrub-t--with-name
+      "/r/.git/claude-land/0a1b/CLAUDE_COMMIT_MSG"
+    (should (equal (commit-gate-scrub-file 'original)
+                   "/r/.git/claude-land/0a1b/CLAUDE_COMMIT_MSG.pre-scrub"))))
+
 ;;; commit-gate-scrub-tests.el ends here
