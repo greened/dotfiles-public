@@ -3870,8 +3870,9 @@ Start `ielm' if it's not already running."
 (use-package alert
   :ensure t
   :config
+  ;; Key on the OS, not `window-system', which is nil while a daemon starts.
   (cond
-   ((memq window-system '(mac ns))
+   ((eq system-type 'darwin)
     (setq my-alert-notifier 'osx-notifier))
    (t
     (setq my-alert-notifier 'notifications)))
