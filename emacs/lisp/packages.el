@@ -2832,12 +2832,13 @@ Start `ielm' if it's not already running."
   ;; on a TRAMP connection that is not open makes it log in synchronously,
   ;; which froze Emacs on opening C++ files. Semgrep is not installed, but
   ;; its client still searches the remote PATH, one round trip per
-  ;; directory, on every lsp start in a remote buffer.
+  ;; directory, on every lsp start in a remote buffer. lsp-copilot is not
+  ;; signed in, so every request fails with NotSignedIn.
   (setq lsp-client-packages
         (seq-difference lsp-client-packages
-                        '(lsp-angular lsp-astro lsp-css lsp-emmet lsp-eslint
-                          lsp-graphql lsp-semgrep lsp-svelte lsp-tailwindcss
-                          lsp-vetur lsp-volar))))
+                        '(lsp-angular lsp-astro lsp-copilot lsp-css lsp-emmet
+                          lsp-eslint lsp-graphql lsp-semgrep lsp-svelte
+                          lsp-tailwindcss lsp-vetur lsp-volar))))
 
 ;; Never let the trunk client probe a TRAMP path.  It froze Emacs for 90
 ;; seconds of CPU, repeatedly, and it can never succeed here.
