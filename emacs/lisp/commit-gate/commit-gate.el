@@ -58,8 +58,11 @@
 ;; that no agent is waiting for. So the sentinel has to name the run it
 ;; approves. commit-land puts each run in its own directory with a `.nonce'
 ;; file, and the gate writes that nonce to `.closed' beside it. The nonce is
-;; read once, when the buffer is visited, and never again. A buffer that
-;; outlives its run must not pick up a later run's nonce at `C-x #'.
+;; read when the buffer is visited. A buffer that outlives its run must not
+;; pick up a later run's nonce at `C-x #'. The one read repeated is one whose
+;; ssh could not connect, and `C-x #' repeats it from the same run directory.
+;; commit-land names that directory for its nonce, so the read can only find
+;; the same run's nonce.
 ;;
 ;; An older commit-land writes no `.nonce'. Then the sentinel is the epoch
 ;; at `<msg>.closed', as before, and a reader requires a stamp newer than its
@@ -70,7 +73,7 @@
 ;; finishing a buffer for every client. So a reader that finds no record has
 ;; to ask a person rather than read a refusal. A missing record means
 ;; UNPROVEN, and it does not mean denied. The one deliberate error is a
-;; `user-error' on a gate whose nonce is unreadable or malformed. It stops
+;; `user-error' on a gate whose nonce cannot approve. It stops
 ;; `C-x #' there and says how to proceed, because approving with a wrong
 ;; nonce would only fail later, out of sight.
 ;;
@@ -118,17 +121,18 @@ worktree's gate shares one basename."
   :group 'commit-gate)
 
 (defvar-local commit-gate-nonce nil
-  "This gate's run nonce, read once when the buffer was visited.
+  "This gate's run nonce, read when the buffer was visited.
 One of:
 
   nil                never read, because the buffer was not visited as a gate
   `pending'          a remote read is still running
   `absent'           no `.nonce' beside the gate, so the epoch is written
   (nonce . STRING)   the nonce `C-x #' writes to `.closed'
+  (retry WHY . FILE) ssh could not connect, so `C-x #' reads FILE again
   (refused . WHY)    unreadable or malformed, so `C-x #' refuses
 
-Set only from nil, or from `pending' by the read that set it, so a later
-visit cannot replace it.")
+Set only from nil, from `pending' by the read that set it, or from `retry'
+by `C-x #', so a later visit cannot replace it.")
 ;; Permanent, because a revert or a major mode change would otherwise drop
 ;; the value and the buffer could not be matched to its run.
 (put 'commit-gate-nonce 'permanent-local t)
@@ -222,17 +226,21 @@ host."
                                          (or buffer (current-buffer)))))
           (and (eq (car-safe state) 'nonce) (cdr state))))))
 
-(defun commit-gate--parse-nonce (text where)
-  "The nonce state for TEXT, read from the file WHERE.
+(defun commit-gate--nonce-file (gate)
+  "The `.nonce' file beside the gate at GATE."
+  (concat (file-name-directory gate) commit-gate-nonce-file-name))
+
+(defun commit-gate--parse-nonce (text)
+  "The nonce state for TEXT, read from a `.nonce' file.
 TEXT may end in one newline and must otherwise be exactly 32 lowercase hex
 characters, the shape commit-land writes. The text is not repeated in a
-refusal, because a malformed file can hold anything."
+refusal, because a malformed file can hold anything. No refusal names the
+file either, because the header line shows the path after the reason."
   (let ((case-fold-search nil))
     (if (string-match "\\`\\([0-9a-f]\\{32\\}\\)\n?\\'" text)
         (cons 'nonce (match-string 1 text))
       (cons 'refused
-            (format "%s is malformed, it must hold 32 lowercase hex characters"
-                    where)))))
+            ".nonce is malformed, it must hold 32 lowercase hex characters"))))
 
 (defun commit-gate--read-local-nonce (file)
   "The nonce state for the local `.nonce' file FILE."
@@ -243,37 +251,54 @@ refusal, because a malformed file can hold anything."
           (set-buffer-multibyte nil)
           ;; Bounded, because a valid nonce is short and the file is not ours.
           (insert-file-contents-literally file nil 0 256)
-          (commit-gate--parse-nonce (buffer-string) file)))
-    (error (cons 'refused (format "%s is unreadable (%s)"
-                                  file (error-message-string err))))))
+          (commit-gate--parse-nonce (buffer-string))))
+    (error (cons 'refused (format ".nonce is unreadable (%s)"
+                                  (error-message-string err))))))
 
-(defun commit-gate--nonce-read-result (proc out file)
-  "The nonce state from the finished remote read PROC of FILE, given OUT."
+(defun commit-gate--nonce-read-result (proc out file retry)
+  "The nonce state from the finished remote read PROC of FILE, given OUT.
+RETRY is non-nil when PROC repeats a read that could not connect."
   (let ((code (process-exit-status proc)))
     (cond
      ((not (eq (process-status proc) 'exit))
-      (cons 'refused (format "reading %s was cut off" file)))
+      (cons 'refused "reading .nonce was cut off"))
+     ;; On a repeat, a missing nonce may be a run commit-land has since
+     ;; removed, and reading it as `absent' would approve with the epoch.
+     ((and retry (eq code 3))
+      (cons 'refused ".nonce is gone, so its run has ended"))
      ((eq code 3) 'absent)
-     ((zerop code) (commit-gate--parse-nonce out file))
-     (t (cons 'refused (format "%s is unreadable (ssh exit %s)" file code))))))
+     ((zerop code) (commit-gate--parse-nonce out))
+     ;; ssh itself exits 255 when the connection fails, which is worth
+     ;; another try. Any other code came from the far side.
+     ((eq code 255)
+      (cons 'retry (cons "ssh could not reach the host to read .nonce (exit 255)"
+                         file)))
+     (t (cons 'refused (format ".nonce is unreadable (ssh exit %s)" code))))))
 
-(defun commit-gate--spawn-nonce-read (buffer file)
+(defun commit-gate--spawn-nonce-read (buffer file &optional retry)
   "Read the remote `.nonce' FILE for BUFFER without waiting on the network.
-The result lands in BUFFER's `commit-gate-nonce' when the process ends."
+The result lands in BUFFER's `commit-gate-nonce' when the process ends.
+RETRY is non-nil when this repeats a read that could not connect."
   (let ((method (file-remote-p file 'method))
         (user (file-remote-p file 'user))
         (host (file-remote-p file 'host))
         (local (file-local-name file))
         (out ""))
     (if (not (and host (member method commit-gate-remote-methods)))
-        (cons 'refused (format "%s cannot be read over the TRAMP method %s"
-                               file method))
+        (cons 'refused (format ".nonce cannot be read over the TRAMP method %s"
+                               method))
       ;; Exit 3 says the file is absent, which is an older commit-land rather
       ;; than a fault, so it must not read as a failed connection.
       (make-process
        :name "commit-gate-nonce"
        :connection-type 'pipe
        :noquery t
+       ;; Stderr goes to its own buffer, because an ssh warning mixed into the
+       ;; output reads as a malformed nonce.
+       :stderr (with-current-buffer
+                   (get-buffer-create " *commit-gate-nonce-stderr*")
+                 (erase-buffer)
+                 (current-buffer))
        :command
        (list "ssh" "-o" "BatchMode=yes" "-o" "ConnectTimeout=10"
              (if user (concat user "@" host) host)
@@ -293,7 +318,7 @@ The result lands in BUFFER's `commit-gate-nonce' when the process ends."
                             'pending))
                (with-current-buffer buffer
                  (setq commit-gate-nonce
-                       (commit-gate--nonce-read-result p out file))))))))
+                       (commit-gate--nonce-read-result p out file retry))))))))
       'pending)))
 
 (defun commit-gate-capture-nonce ()
@@ -302,25 +327,41 @@ Does nothing unless the current buffer is a gate whose nonce was never read.
 Written for `find-file-hook' and `server-visit-hook'. The second catches a
 gate buffer that was already open when the hooks were armed."
   (when (and (commit-gate-buffer-p) (null commit-gate-nonce))
-    (let ((file (concat (file-name-directory (buffer-file-name))
-                        commit-gate-nonce-file-name)))
+    (let ((file (commit-gate--nonce-file (buffer-file-name))))
       (setq commit-gate-nonce
             (or (ignore-errors
                   (if (file-remote-p file)
                       (commit-gate--spawn-nonce-read (current-buffer) file)
                     (commit-gate--read-local-nonce file)))
-                (cons 'refused (format "%s could not be read" file)))))))
+                (cons 'refused ".nonce could not be read"))))))
 
-(defun commit-gate--refusal (state)
-  "Why STATE cannot approve, or nil when it can."
-  (pcase state
-    ('nil "no nonce was read when this gate was opened, so it cannot be \
+(defun commit-gate--retry-nonce ()
+  "Read this gate's remote nonce again after a read that could not connect.
+Does nothing unless `commit-gate-nonce' is a `retry' state."
+  (when (eq (car-safe commit-gate-nonce) 'retry)
+    ;; The run directory path is captured with the state, so the repeat
+    ;; reads the same run directory whatever the buffer is visiting now.
+    (let ((file (cddr commit-gate-nonce)))
+      (setq commit-gate-nonce
+            (or (ignore-errors
+                  (commit-gate--spawn-nonce-read (current-buffer) file t))
+                (cons 'refused ".nonce could not be read"))))))
+
+(defun commit-gate--refusal (state &optional file)
+  "Why STATE cannot approve, or nil when it can.
+FILE is the `.nonce' path, named last so the reason and the keys come first."
+  (let ((from (if file (format ". The nonce is read from %s" file) "")))
+    (pcase state
+      ('nil "no nonce was read when this gate was opened, so it cannot be \
 matched to its run. Press C-x k to discard it, then rerun commit-land")
-    ('pending "this gate's nonce is still being read from its host. Press \
+      ('pending "this gate's nonce is still being read from its host. Press \
 C-x # again in a moment, or C-x k to discard")
-    (`(refused . ,why)
-     (concat why ". Press C-x k to discard this gate, then rerun commit-land \
-so it writes a fresh nonce"))))
+      (`(retry ,why . ,_)
+       (concat why ". It is being read again. Press C-x # again in a moment, \
+or C-x k to discard" from))
+      (`(refused . ,why)
+       (concat why ". Press C-x k to discard this gate, then rerun commit-land \
+so it writes a fresh nonce" from)))))
 
 (defun commit-gate--record-file (gate)
   "The local record path for the gate at GATE.
@@ -418,8 +459,16 @@ Signals a `user-error' for a gate whose nonce cannot approve, which stops
          (nonce (and (eq (car-safe state) 'nonce) (cdr state)))
          (stamp (format-time-string "%s")))
     (when gate
-      (let ((why (and (not nonce) (not (eq state 'absent))
-                      (commit-gate--refusal state))))
+      ;; The repeat runs before the reason is built, so a spawn that fails
+      ;; reports its refusal and never promises a read that is not running.
+      (commit-gate--retry-nonce)
+      (let* ((now commit-gate-nonce)
+             (shown (if (and (eq (car-safe state) 'retry) (eq now 'pending))
+                        state
+                      now))
+             (why (and (not nonce) (not (eq now 'absent))
+                       (commit-gate--refusal shown
+                                             (commit-gate--nonce-file gate)))))
         (when why
           (setq-local header-line-format
                       (propertize (string-replace

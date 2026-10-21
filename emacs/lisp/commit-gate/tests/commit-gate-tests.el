@@ -315,7 +315,11 @@ proceed."
             (should (string-match-p "\\.nonce is malformed" (cadr err)))
             (should (string-match-p "C-x k to discard" (cadr err)))
             (should (string-match-p "rerun commit-land" (cadr err))))
-          (should (string-match-p "Not approved" header-line-format)))
+          (should (string-prefix-p "Not approved. .nonce is malformed"
+                                   header-line-format))
+          (should (string-suffix-p
+                   (concat (expand-file-name ".nonce" run) ".")
+                   (string-replace "%%" "%" header-line-format))))
         (should-not (file-exists-p (expand-file-name ".closed" run)))
         (should-not (file-exists-p (concat gate ".closed")))
         (should-not (commit-gate-accepted-p gate))))))
@@ -359,7 +363,9 @@ the failure this package exists to remove."
   "Run BODY with an `ssh' shim first on `exec-path', under a fresh DIR.
 The shim appends its own arguments to the file ARGV, one to a line, then runs
 its last argument through `sh'. It exits 7 when the target user is \"fail\",
-and it sleeps first when the target user is \"slow\"."
+and it sleeps first when the target user is \"slow\". For \"warn\" it
+writes an ssh warning to stderr first. For \"down\" it exits 255, as ssh does
+on a failed connection, while the file `down' exists in DIR."
   (declare (indent 2))
   `(commit-gate-t--in-dir ,dir
      (let ((,argv (expand-file-name "argv" ,dir))
@@ -372,6 +378,11 @@ and it sleeps first when the target user is \"slow\"."
                  "\"; last=$a; done\n"
                  "case \" $* \" in *\" slow@\"*) sleep 5 ;; esac\n"
                  "case \" $* \" in *\" fail@\"*) exit 7 ;; esac\n"
+                 "case \" $* \" in *\" warn@\"*) echo 'X11 forwarding "
+                 "request failed on channel 0' >&2 ;; esac\n"
+                 "case \" $* \" in *\" down@\"*) [ -e \""
+                 (expand-file-name "down" ,dir)
+                 "\" ] && exit 255 ;; esac\n"
                  "sh -c \"$last\"\n"))
        (set-file-modes (expand-file-name "ssh" bin) #o755)
        (let ((exec-path (cons bin exec-path)))
@@ -483,6 +494,106 @@ on TRAMP. A missing file and a failed connection read differently."
       (delete-file (expand-file-name ".nonce" (file-name-directory gate)))
       (should (eq (commit-gate-t--remote-capture (concat "/scp:u@dev:" gate))
                   'absent)))))
+
+(ert-deftest commit-gate-keeps-ssh-stderr-out-of-a-remote-nonce ()
+  "An ssh warning on stderr does not reach the nonce parser."
+  (commit-gate-t--with-ssh-shim dir _argv
+    (let ((gate (commit-gate-t--run-dir dir commit-gate-t--nonce-a)))
+      (should (equal (commit-gate-t--remote-capture
+                      (concat "/scp:warn@dev:" gate))
+                     (cons 'nonce commit-gate-t--nonce-a))))))
+
+(ert-deftest commit-gate-retries-a-nonce-read-that-could-not-connect ()
+  "A failed connection is transient, so `C-x #' reads the nonce again and the
+next press approves. The reason leads the header line and the path ends it."
+  (commit-gate-t--with-ssh-shim dir _argv
+    (let* ((local (commit-gate-t--run-dir dir commit-gate-t--nonce-a))
+           (gate (concat "/scp:down@dev:" local))
+           (nonce-file (concat (file-name-directory gate) ".nonce"))
+           (down (expand-file-name "down" dir)))
+      (write-region "" nil down)
+      (commit-gate-t--with-name gate
+        (commit-gate-capture-nonce)
+        (commit-gate-t--settle (get-process "commit-gate-nonce"))
+        (should (eq (car-safe commit-gate-nonce) 'retry))
+        (should (equal (cddr commit-gate-nonce) nonce-file))
+        (delete-file down)
+        (let ((err (should-error (commit-gate-record-accept)
+                                 :type 'user-error)))
+          (should (string-match-p "exit 255" (cadr err)))
+          (should (string-match-p "C-x # again" (cadr err))))
+        (should (string-prefix-p "Not approved. ssh could not reach"
+                                 header-line-format))
+        (should (string-suffix-p (concat nonce-file ".")
+                                 (string-replace "%%" "%" header-line-format)))
+        (should (eq commit-gate-nonce 'pending))
+        (commit-gate-t--settle (get-process "commit-gate-nonce"))
+        (should (equal commit-gate-nonce (cons 'nonce commit-gate-t--nonce-a)))
+        (commit-gate-t--settle (commit-gate-record-accept)))
+      (should (equal (commit-gate-t--contents
+                      (expand-file-name ".closed" (file-name-directory local)))
+                     commit-gate-t--nonce-a)))))
+
+(ert-deftest commit-gate-refuses-a-retry-whose-run-has-ended ()
+  "commit-land removes the run directory when it gives up, so a repeated read
+that finds no nonce must refuse rather than approve with the epoch."
+  (commit-gate-t--with-ssh-shim dir _argv
+    (let* ((local (commit-gate-t--run-dir dir commit-gate-t--nonce-a))
+           (gate (concat "/scp:down@dev:" local))
+           (down (expand-file-name "down" dir)))
+      (write-region "" nil down)
+      (commit-gate-t--with-name gate
+        (commit-gate-capture-nonce)
+        (commit-gate-t--settle (get-process "commit-gate-nonce"))
+        (should (eq (car-safe commit-gate-nonce) 'retry))
+        (delete-file down)
+        (delete-directory (file-name-directory local) t)
+        (should-error (commit-gate-record-accept) :type 'user-error)
+        (commit-gate-t--settle (get-process "commit-gate-nonce"))
+        (should (equal commit-gate-nonce
+                       (cons 'refused ".nonce is gone, so its run has ended")))
+        (should-error (commit-gate-record-accept) :type 'user-error)
+        (should (string-prefix-p "Not approved. .nonce is gone"
+                                 header-line-format)))
+      (should-not (commit-gate-accepted-p gate))
+      (should-not (file-exists-p (concat local ".closed"))))))
+
+(ert-deftest commit-gate-reports-a-retry-that-could-not-start ()
+  "When the repeated read cannot be spawned, the header line gives that
+refusal and does not promise a read that is not running."
+  (commit-gate-t--with-ssh-shim dir _argv
+    (let* ((local (commit-gate-t--run-dir dir commit-gate-t--nonce-a))
+           (gate (concat "/scp:down@dev:" local))
+           (down (expand-file-name "down" dir)))
+      (write-region "" nil down)
+      (commit-gate-t--with-name gate
+        (commit-gate-capture-nonce)
+        (commit-gate-t--settle (get-process "commit-gate-nonce"))
+        (should (eq (car-safe commit-gate-nonce) 'retry))
+        (let ((exec-path (list (expand-file-name "no-such-dir" dir))))
+          (let ((err (should-error (commit-gate-record-accept)
+                                   :type 'user-error)))
+            (should-not (string-match-p "being read again" (cadr err)))))
+        (should (equal commit-gate-nonce
+                       (cons 'refused ".nonce could not be read")))
+        (should (string-prefix-p "Not approved. .nonce could not be read"
+                                 header-line-format))
+        (should-not (get-process "commit-gate-nonce")))
+      (should-not (commit-gate-accepted-p gate)))))
+
+(ert-deftest commit-gate-does-not-retry-a-nonce-read-that-failed-remotely ()
+  "Only a failed connection is retried. Any other failure stays a refusal."
+  (commit-gate-t--with-ssh-shim dir _argv
+    (let ((gate (concat "/scp:fail@dev:"
+                        (commit-gate-t--run-dir dir commit-gate-t--nonce-a))))
+      (commit-gate-t--with-name gate
+        (commit-gate-capture-nonce)
+        (commit-gate-t--settle (get-process "commit-gate-nonce"))
+        (let ((state commit-gate-nonce))
+          (should (eq (car-safe state) 'refused))
+          (should-error (commit-gate-record-accept) :type 'user-error)
+          (should (equal commit-gate-nonce state))
+          (should-not (get-process "commit-gate-nonce")))))))
 
 (ert-deftest commit-gate-refuses-a-remote-gate-still-reading ()
   "A pending read has no nonce to write yet, so `C-x #' says to retry."
