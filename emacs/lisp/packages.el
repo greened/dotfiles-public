@@ -3680,6 +3680,12 @@ easily missed."
   (advice-add 'magit-turn-on-auto-revert-mode-if-desired
 	      :around
 	      #'my-magit-auto-revert-mode-advice))
+
+(use-package magit-git-project
+  ;; git-project's command tree as a Magit transient, on & in Magit.
+  :after magit
+  :ensure (:fetcher github :repo "greened/magit-git-project" :try-local t))
+
 ;; (use-package forge
 ;;   :straight t
 ;;   :after magit)
