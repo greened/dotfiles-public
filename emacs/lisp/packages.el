@@ -2868,6 +2868,36 @@ Start `ielm' if it's not already running."
               (lambda (filename &optional _)
                 (not (file-remote-p filename)))))
 
+;; Run one deferred lsp start at a time. `lsp-deferred' starts each buffer
+;; from an idle timer, and TRAMP's wait loop calls `sit-for' outside its
+;; connection lock. A second buffer's start can therefore run inside the
+;; first one's remote command. The inner call takes the outer call's reply,
+;; and the outer waits for it forever. Two buffers on one host, as in an
+;; ediff, hang Emacs this way until C-g.
+(defvar my/lsp-init-running nil
+  "Non-nil while `lsp--init-if-visible' runs.")
+
+(defun my/lsp-init-one-at-a-time (fn)
+  "Call FN, `lsp--init-if-visible', unless another call is in progress.
+A nested call retries from a fresh idle timer instead."
+  (if (not my/lsp-init-running)
+      (let ((my/lsp-init-running t))
+        (funcall fn))
+    (let ((buffer (current-buffer)))
+      (run-with-idle-timer
+       0.2 nil
+       (lambda ()
+         (when (buffer-live-p buffer)
+           (with-current-buffer buffer
+             (unless (lsp--init-if-visible)
+               (add-hook 'window-configuration-change-hook
+                         #'lsp--init-if-visible nil t)))))))
+    ;; Keep `lsp-deferred' from installing its hook. The retry does that.
+    t))
+
+(with-eval-after-load 'lsp-mode
+  (advice-add 'lsp--init-if-visible :around #'my/lsp-init-one-at-a-time))
+
 (use-package lsp-ui
   :ensure t
   :commands lsp-ui-mode
