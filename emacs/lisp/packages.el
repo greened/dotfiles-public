@@ -2830,12 +2830,14 @@ Start `ielm' if it's not already running."
   ;; No web clients are used here. The tailwindcss activation check runs for
   ;; every buffer and tests whether each lsp session folder exists. A folder
   ;; on a TRAMP connection that is not open makes it log in synchronously,
-  ;; which froze Emacs on opening C++ files.
+  ;; which froze Emacs on opening C++ files. Semgrep is not installed, but
+  ;; its client still searches the remote PATH, one round trip per
+  ;; directory, on every lsp start in a remote buffer.
   (setq lsp-client-packages
         (seq-difference lsp-client-packages
                         '(lsp-angular lsp-astro lsp-css lsp-emmet lsp-eslint
-                          lsp-graphql lsp-svelte lsp-tailwindcss lsp-vetur
-                          lsp-volar))))
+                          lsp-graphql lsp-semgrep lsp-svelte lsp-tailwindcss
+                          lsp-vetur lsp-volar))))
 
 ;; Never let the trunk client probe a TRAMP path.  It froze Emacs for 90
 ;; seconds of CPU, repeatedly, and it can never succeed here.
