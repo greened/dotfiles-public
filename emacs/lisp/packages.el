@@ -3206,6 +3206,28 @@ Start `ielm' if it's not already running."
   :hook
   (embark-collect-mode . consult-preview-at-point-mode))
 
+(defvar my/mode-line-flash-timer nil
+  "The timer of the mode-line flash in progress, or nil.")
+
+(defun my/flash-mode-line (&optional times)
+  "Flash the mode line TIMES times, by default three, as a silent bell.
+Toggling `:inverse-video' leaves the theme's colors alone. One flash is
+easily missed."
+  (unless my/mode-line-flash-timer
+    (let* ((orig (face-attribute 'mode-line :inverse-video))
+           (flipped (not (eq orig t)))
+           (steps (* 2 (or times 3))))
+      (setq my/mode-line-flash-timer
+            (run-with-timer
+             0 0.15
+             (lambda ()
+               (setq steps (1- steps))
+               (set-face-attribute 'mode-line nil :inverse-video
+                                   (if (= (% steps 2) 1) flipped orig))
+               (when (zerop steps)
+                 (cancel-timer my/mode-line-flash-timer)
+                 (setq my/mode-line-flash-timer nil))))))))
+
 ;; A few more useful configurations...
 (use-package emacs
   :ensure nil
@@ -3313,7 +3335,9 @@ Start `ielm' if it's not already running."
   (global-set-key (kbd "C-x \\") #'align-regexp)
 
   ;; Misc behavior.
+  ;; The macOS visible bell is too faint to notice.
   (setq visible-bell t)
+  (setq ring-bell-function #'my/flash-mode-line)
   (setq auto-save-default nil)
   (setq find-file-existing-other-name t)
   (setq search-highlight t)
