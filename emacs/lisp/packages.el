@@ -2825,7 +2825,17 @@ Start `ielm' if it's not already running."
   ;; Don't let lsp-mode auto-wire company; corfu consumes lsp-completion-at-point.
   (lsp-completion-provider :none)
   (lsp-idle-delay 0.5)
-  (lsp-headerline-breadcrumb-enable nil))
+  (lsp-headerline-breadcrumb-enable nil)
+  :config
+  ;; No web clients are used here. The tailwindcss activation check runs for
+  ;; every buffer and tests whether each lsp session folder exists. A folder
+  ;; on a TRAMP connection that is not open makes it log in synchronously,
+  ;; which froze Emacs on opening C++ files.
+  (setq lsp-client-packages
+        (seq-difference lsp-client-packages
+                        '(lsp-angular lsp-astro lsp-css lsp-emmet lsp-eslint
+                          lsp-graphql lsp-svelte lsp-tailwindcss lsp-vetur
+                          lsp-volar))))
 
 ;; Never let the trunk client probe a TRAMP path.  It froze Emacs for 90
 ;; seconds of CPU, repeatedly, and it can never succeed here.
@@ -2851,8 +2861,6 @@ Start `ielm' if it's not already running."
 ;; `file-remote-p' is string parsing, not I/O, so the guard is free.  Local
 ;; trunk is untouched, though trunk is not installed here and no repo has a
 ;; .trunk/trunk.yaml, so this walk could never have found anything.
-;; `lsp-volar--activate-p' (Vue) is the only other remote clone that walks the
-;; filesystem; left alone until it actually shows up.
 (with-eval-after-load 'lsp-trunk
   (advice-add 'lsp-trunk-check-for-init :before-while
               (lambda (filename &optional _)
