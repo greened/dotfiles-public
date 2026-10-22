@@ -714,6 +714,79 @@ refusal and does not promise a read that is not running."
     (commit-gate-show-banner)
     (should-not (local-variable-p 'header-line-format))))
 
+;;; Saying what was approved
+
+(ert-deftest commit-gate-accept-holds-the-approval-message ()
+  "The repo and subject are read before the gate closes."
+  (commit-gate-t--in-dir dir
+    (let* ((git (expand-file-name "r/.git/" dir))
+           (gate (expand-file-name "CLAUDE_COMMIT_MSG" git))
+           (commit-gate--pending-announcement nil))
+      (make-directory git t)
+      (with-temp-file gate (insert "\nemacs: fix the thing\n\nBody.\n"))
+      (commit-gate-t--visit gate (commit-gate-record-accept))
+      (should (equal (cdr commit-gate--pending-announcement)
+                     '("r" "emacs: fix the thing"))))))
+
+(ert-deftest commit-gate-refused-accept-holds-no-message ()
+  "A refusal stays in the header line, so no message may say approved."
+  (commit-gate-t--in-dir dir
+    (let ((gate (commit-gate-t--run-dir dir commit-gate-t--nonce-a "junk\n"))
+          (commit-gate--pending-announcement '(stale "x" "y")))
+      (commit-gate-t--visit gate
+        (should-error (commit-gate-record-accept) :type 'user-error))
+      (should-not commit-gate--pending-announcement))))
+
+(ert-deftest commit-gate-another-buffer-clears-a-held-message ()
+  "A quit at the save prompt leaves a message held. The next finish of any
+other buffer must not announce it."
+  (let ((commit-gate--pending-announcement '(stale "x" "y")))
+    (with-temp-buffer (commit-gate-record-accept))
+    (should-not commit-gate--pending-announcement)))
+
+(ert-deftest commit-gate-announces-after-server-edit-only ()
+  "The message comes after `server-edit' returns, and only once."
+  (let ((commit-gate--pending-announcement nil)
+        (said nil))
+    (cl-letf (((symbol-function 'commit-gate-announce-approval)
+               (lambda (&rest args) (setq said args))))
+      (setq commit-gate--pending-announcement '(b "r" "s"))
+      (commit-gate-announce-pending)
+      (should (equal said '(b "r" "s")))
+      (should-not commit-gate--pending-announcement)
+      (setq said nil)
+      (commit-gate-announce-pending)
+      (should-not said))))
+
+(ert-deftest commit-gate-announces-the-approval ()
+  "With an ordinary buffer showing, it names only the approved gate."
+  (with-temp-buffer
+    (let ((approved (current-buffer)))
+      (with-temp-buffer
+        (set-window-buffer (selected-window) (current-buffer))
+        (should (equal (commit-gate-announce-approval
+                        approved "dotfiles" "emacs: fix it")
+                       "Approved the commit for dotfiles: emacs: fix it."))
+        (should (equal (commit-gate-announce-approval approved nil "Fix it.")
+                       "Approved the commit: Fix it."))))))
+
+(ert-deftest commit-gate-announces-another-gate-showing ()
+  "When the buffer shown next is a second gate, the message says so."
+  (with-temp-buffer
+    (let ((approved (current-buffer)))
+      (commit-gate-t--with-name "/h/prevue/.git/worktrees/wt/CLAUDE_COMMIT_MSG"
+        (set-window-buffer (selected-window) (current-buffer))
+        (should (equal (commit-gate-announce-approval approved "dotfiles" "s")
+                       "Approved the commit for dotfiles: s. This is another \
+commit gate, for prevue, worktree wt."))))))
+
+(ert-deftest commit-gate-does-not-call-the-approved-gate-another ()
+  "A gate still showing after its own approval is not a second gate."
+  (commit-gate-t--with-name "/h/dotfiles/.git/CLAUDE_COMMIT_MSG"
+    (set-window-buffer (selected-window) (current-buffer))
+    (should (equal (commit-gate-announce-approval (current-buffer) nil nil)
+                   "Approved the commit."))))
+
 ;;; Arming it
 
 (ert-deftest commit-gate-arms-and-reports-itself ()
@@ -725,7 +798,8 @@ refusal and does not promise a read that is not running."
           (should-not (commit-gate-armed-p))
           (commit-gate-arm)
           (should (commit-gate-armed-p)))
-      (advice-remove 'server-done #'commit-gate-record-accept))))
+      (advice-remove 'server-done #'commit-gate-record-accept)
+      (advice-remove 'server-edit #'commit-gate-announce-pending))))
 
 (ert-deftest commit-gate-arming-twice-does-not-stack ()
   "The configuration is reloaded often, and a doubled advice would stamp
@@ -742,7 +816,8 @@ twice and make the count meaningless. Measured rather than assumed."
                              (setq n (1+ n))))
                          'server-done)
             (should (equal n 1))))
-      (advice-remove 'server-done #'commit-gate-record-accept))))
+      (advice-remove 'server-done #'commit-gate-record-accept)
+      (advice-remove 'server-edit #'commit-gate-announce-pending))))
 
 (ert-deftest commit-gate-arming-installs-both-header-lines ()
   "Once each, however often the configuration is reloaded, and the nonce
@@ -757,6 +832,7 @@ read on both hooks that can open a gate."
                            commit-gate-show-banner
                            commit-gate-warn-if-misnamed)))
           (should (equal find-file-hook '(commit-gate-capture-nonce))))
-      (advice-remove 'server-done #'commit-gate-record-accept))))
+      (advice-remove 'server-done #'commit-gate-record-accept)
+      (advice-remove 'server-edit #'commit-gate-announce-pending))))
 
 ;;; commit-gate-tests.el ends here

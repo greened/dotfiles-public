@@ -447,6 +447,9 @@ A reader polling for the sentinel must never see half of it."
     (write-region text nil tmp nil 'quiet)
     (rename-file tmp file t)))
 
+(defvar commit-gate--pending-announcement nil
+  "The gate `server-done' just approved, as (BUFFER REPO SUBJECT), or nil.")
+
 (defun commit-gate-record-accept (&rest _)
   "Record that the current gate was accepted, and stamp its sentinel.
 Does nothing for any other buffer. Written for `:before' advice on
@@ -454,6 +457,7 @@ Does nothing for any other buffer. Written for `:before' advice on
 
 Signals a `user-error' for a gate whose nonce cannot approve, which stops
 `C-x #' and leaves the gate open with the reason in its header line."
+  (setq commit-gate--pending-announcement nil)
   (let* ((gate (ignore-errors (and (commit-gate-buffer-p) (buffer-file-name))))
          (state (and gate commit-gate-nonce))
          (nonce (and (eq (car-safe state) 'nonce) (cdr state)))
@@ -484,7 +488,48 @@ Signals a `user-error' for a gate whose nonce cannot approve, which stops
             (commit-gate--spawn-remote gate stamp nonce)
           (commit-gate--write-local-sentinel
            (commit-gate--sentinel-for gate nonce) (or nonce stamp))
-          (commit-gate--record-outcome gate stamp "written"))))))
+          (commit-gate--record-outcome gate stamp "written")))
+      (setq commit-gate--pending-announcement
+            (list (current-buffer)
+                  (ignore-errors (commit-gate-repo-label gate))
+                  (ignore-errors (commit-gate--subject)))))))
+
+(defun commit-gate-announce-pending (&rest _)
+  "Announce the gate the last `server-done' approved, if any.
+Written for `:after' advice on `server-edit'. A quit at the save prompt
+skips it, so nothing says approved for a client still waiting."
+  (let ((pending commit-gate--pending-announcement))
+    (setq commit-gate--pending-announcement nil)
+    (when pending
+      (ignore-errors (apply #'commit-gate-announce-approval pending)))))
+
+(defun commit-gate--subject ()
+  "The first non-blank line of the current buffer, or nil."
+  (save-excursion
+    (goto-char (point-min))
+    (and (re-search-forward "^[ \t]*\\([^ \t\n].*\\)$" nil t)
+         (match-string-no-properties 1))))
+
+(defun commit-gate-announce-approval (approved repo subject)
+  "Say which gate was approved, and whether the buffer now shown is another.
+APPROVED is the gate's buffer, and REPO and SUBJECT name it. Two gates in a
+row with near-identical subjects otherwise read as one. Returns the message."
+  (let* ((next (window-buffer (selected-window)))
+         (another (and (not (eq next approved))
+                       (commit-gate-buffer-p next)))
+         (next-repo (and another
+                         (ignore-errors
+                           (commit-gate-repo-label (buffer-file-name next))))))
+    (message "%s"
+             (concat "Approved the commit"
+                     (and repo (concat " for " repo))
+                     (and subject (concat ": " subject))
+                     (and (not (and subject (string-match-p "[.!?]\\'" subject)))
+                          ".")
+                     (and another
+                          (concat " This is another commit gate"
+                                  (and next-repo (concat ", for " next-repo))
+                                  "."))))))
 
 (defun commit-gate-accepted-p (gate &optional since)
   "The time the gate at GATE was accepted, or nil when there is no record.
@@ -512,10 +557,11 @@ A nil result means UNPROVEN. It does not mean the message was refused."
   (and (advice-member-p #'commit-gate-record-accept 'server-done) t))
 
 (defun commit-gate-arm ()
-  "Install the accept recorder, the nonce read and the two header lines.
+  "Install the recorder, its message, the nonce read and both header lines.
 Adding the same function twice does not stack a second copy, so this is safe
 to re-run when the configuration is reloaded."
   (advice-add 'server-done :before #'commit-gate-record-accept)
+  (advice-add 'server-edit :after #'commit-gate-announce-pending)
   (add-hook 'find-file-hook #'commit-gate-capture-nonce)
   (add-hook 'server-visit-hook #'commit-gate-capture-nonce)
   (add-hook 'server-visit-hook #'commit-gate-warn-if-misnamed)
