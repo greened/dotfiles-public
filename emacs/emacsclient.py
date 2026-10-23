@@ -22,7 +22,7 @@ def default_emacsclient():
 
 def default_socket():
   # ~/.ssh/emacs-server is the right socket in both contexts: locally it's the
-  # real Emacs server socket (eserver.el), remotely it's the forwarded socket
+  # real Emacs server socket, remotely it's the forwarded socket
   # that tunnels to that same local Emacs. So always -s it; only the file path
   # differs.
   return f'{Path.home()}/.ssh/emacs-server'

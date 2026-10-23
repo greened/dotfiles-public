@@ -942,15 +942,15 @@ and a stale one looks exactly like an accurate one."
     (setq current-frame (car (car (cdr (current-frame-configuration)))))
     (select-frame-set-input-focus current-frame)))
 
-;; Emacs server so a remote emacsclient can open files here (from eserver.el).
+;; Emacs server so a remote emacsclient can open files here.
 (use-package server
   :ensure nil
   :demand t
   :config
   ;; The local (non-SSH) desktop Emacs hosts a server on a fixed unix socket,
-  ;; ~/.ssh/emacs-server.  ssh/config.external RemoteForwards that socket to the
-  ;; dev hosts, where emacs/emacsclient.py connects to it and rewrites the path
-  ;; to a /scp: TRAMP path so this Emacs opens the remote file.  Guard on
+  ;; ~/.ssh/emacs-server. An overlay's ssh config RemoteForwards that socket to
+  ;; the dev hosts. There emacs/emacsclient.py connects to it and rewrites the
+  ;; path to a /scp: TRAMP path so this Emacs opens the remote file. Guard on
   ;; SSH_CLIENT so a remote Emacs never clobbers the forwarded socket.
   ;; Starting second is SILENT, and that is the whole problem.  `server-start'
   ;; is skipped when another Emacs already holds the socket, so the second one
