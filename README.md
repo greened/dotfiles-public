@@ -24,7 +24,7 @@ names a specific overlay, so nothing private appears here:
 | emacs | loads `*/emacs/*.el`                                         |
 | ssh   | `Include`s `*/ssh/config`                                    |
 | tmux  | `source-file`s `*/tmux/*.conf`                              |
-| git   | each overlay's `git/config` is added to `~/.gitconfig.overlays` |
+| git   | an overlay's `link.sh` adds its git config with `gcoverlays_add` |
 
 An overlay can also deploy files the base globs don't cover (mail, news, gdb, …)
 and retire obsolete ones, through its own `link.sh` (see below).
@@ -82,7 +82,9 @@ or, in one line:
 `install.sh [host-override]` clones the base, selects the overlays whose `match`
 applies to this machine, **suggests an apply order and lets you confirm or reorder
 it**, clones them, and runs the base `link.sh`.  The chosen order is recorded in
-`~/lib/dotfiles-overlays/.order` so re-runs are stable.  Matches against the FQDN
+`~/lib/dotfiles-overlays/.order`. Overlay `link.sh` scripts, the git includes
+and `repo-sync` follow it. bash, Emacs, ssh and tmux load in glob order by
+overlay name. Matches against the FQDN
 by default; pass a hostname to override.  Re-run any time to update.  Finally, if
 a Claude-config manifest exists, it bootstraps `~/.claude` too (see **Claude Code
 config** below).
@@ -257,3 +259,14 @@ when `$HOME` is not this account's home — a redirected `$HOME` whose `.ssh`
 pointed back at the real one once replaced `~/.ssh/config`.  `./link-selftest.sh`
 covers that guard; it exercises the predicate and never runs an install against a
 fake home.
+
+## Further reading
+
+- [docs/overlays.md](docs/overlays.md): how overlays are picked, what each
+  tool reads from them, and what belongs in which one.
+- [docs/remote-emacsclient.md](docs/remote-emacsclient.md): editing dev-VM
+  files in the laptop's Emacs over a forwarded server socket.
+- [docs/commit-gate.md](docs/commit-gate.md): how a human approves an AI
+  agent's commits in a guarded clone.
+- [docs/emacs-traps.md](docs/emacs-traps.md): Emacs, TRAMP and elpaca traps,
+  each with its symptom, cause and fix.
