@@ -61,42 +61,91 @@
       (when (file-executable-p gxx) (setenv "CXX" gxx)))))
 
 ;; elpaca package management
-(defvar elpaca-installer-version 0.7)
+(defvar elpaca-installer-version 0.12)
 (defvar elpaca-directory (expand-file-name "elpaca/" user-emacs-directory))
 (defvar elpaca-builds-directory (expand-file-name "builds/" elpaca-directory))
-(defvar elpaca-repos-directory (expand-file-name "repos/" elpaca-directory))
+(defvar elpaca-sources-directory (expand-file-name "sources/" elpaca-directory))
+;; Pinned, so every fresh install builds the same elpaca. A pin needs the
+;; full history, hence :depth nil. Tag v0.2.0 does not build on Emacs 29.
 (defvar elpaca-order '(elpaca :repo "https://github.com/progfolio/elpaca.git"
-                              :ref nil :depth 1
+                              :ref "7763ede8babd238b7a9a5835833ef4f4bdc4e53e"
+                              :depth nil :inherit ignore
                               :files (:defaults "elpaca-test.el" (:exclude "extensions"))
-                              :build (:not elpaca--activate-package)))
-(let* ((repo  (expand-file-name "elpaca/" elpaca-repos-directory))
+                              :build (:not elpaca-activate)))
+;; An install from the 0.7 bootstrap keeps its old build, and the build
+;; shadows the new clone on load-path.
+(defun elpaca-bootstrap--warn-old-layout (dir)
+  "Warn when the elpaca directory DIR still holds the old installer's clone."
+  (when (file-directory-p (expand-file-name "repos/elpaca/" dir))
+    (display-warning
+     'elpaca
+     (format "%s holds an elpaca from the old installer, so its old build \
+still loads. Move %s and %s aside and restart to rebuild from sources/."
+             dir
+             (expand-file-name "builds/elpaca/" dir)
+             (expand-file-name "repos/" dir)))))
+(elpaca-bootstrap--warn-old-layout elpaca-directory)
+;; Neither the installer nor elpaca moves an existing clone to a new :ref.
+(defun elpaca-bootstrap--warn-stale-pin (source ref)
+  "Warn when the elpaca clone in SOURCE is not checked out at REF."
+  (when (and ref (file-directory-p source))
+    ;; A failure here must not stop the rest of init, so it only warns.
+    (condition-case err
+        (let* ((default-directory source)
+               status
+               (out (with-temp-buffer
+                      ;; stderr stays out, so a git warning cannot pose as a hash.
+                      (setq status (call-process "git" nil '(t nil) nil "rev-parse"
+                                                 "HEAD" (concat ref "^{commit}")))
+                      (split-string (buffer-string)))))
+          (cond
+           ((not (eql status 0))
+            (display-warning
+             'elpaca
+             (format "%s is not a git checkout at the pinned %s (git exited \
+%s). Run git fetch and git checkout %s there, then M-x elpaca-rebuild on \
+elpaca." source ref status ref)))
+           ((not (equal (car out) (cadr out)))
+            (display-warning
+             'elpaca
+             (format "%s is not at the pinned %s. Run git fetch and git \
+checkout %s there, then M-x elpaca-rebuild on elpaca." source ref ref)))))
+      (file-error
+       (display-warning
+        'elpaca
+        (format "Cannot check that %s is at the pinned %s: %s"
+                source ref (error-message-string err)))))))
+(let* ((repo  (expand-file-name "elpaca/" elpaca-sources-directory))
        (build (expand-file-name "elpaca/" elpaca-builds-directory))
        (order (cdr elpaca-order))
        (default-directory repo))
   (add-to-list 'load-path (if (file-exists-p build) build repo))
   (unless (file-exists-p repo)
     (make-directory repo t)
-    (when (< emacs-major-version 28) (require 'subr-x))
+    (when (<= emacs-major-version 28) (require 'subr-x))
     (condition-case-unless-debug err
-        (if-let ((buffer (pop-to-buffer-same-window "*elpaca-bootstrap*"))
-                 ((zerop (apply #'call-process `("git" nil ,buffer t "clone"
-                                                 ,@(when-let ((depth (plist-get order :depth)))
-                                                     (list (format "--depth=%d" depth) "--no-single-branch"))
-                                                 ,(plist-get order :repo) ,repo))))
-                 ((zerop (call-process "git" nil buffer t "checkout"
-                                       (or (plist-get order :ref) "--"))))
-                 (emacs (concat invocation-directory invocation-name))
-                 ((zerop (call-process emacs nil buffer nil "-Q" "-L" "." "--batch"
-                                       "--eval" "(byte-recompile-directory \".\" 0 'force)")))
-                 ((require 'elpaca))
-                 ((elpaca-generate-autoloads "elpaca" repo)))
+        (if-let* ((buffer (pop-to-buffer-same-window "*elpaca-bootstrap*"))
+                  ((zerop (apply #'call-process `("git" nil ,buffer t "clone"
+                                                  ,@(when-let* ((depth (plist-get order :depth)))
+                                                      (list (format "--depth=%d" depth) "--no-single-branch"))
+                                                  ,(plist-get order :repo) ,repo))))
+                  ((zerop (call-process "git" nil buffer t "checkout"
+                                        (or (plist-get order :ref) "--"))))
+                  (emacs (concat invocation-directory invocation-name))
+                  ((zerop (call-process emacs nil buffer nil "-Q" "-L" "." "--batch"
+                                        "--eval" "(byte-recompile-directory \".\" 0 'force)")))
+                  ((require 'elpaca))
+                  ((elpaca-generate-autoloads "elpaca" repo)))
             (progn (message "%s" (buffer-string)) (kill-buffer buffer))
           (error "%s" (with-current-buffer buffer (buffer-string))))
       ((error) (warn "%s" err) (delete-directory repo 'recursive))))
   (unless (require 'elpaca-autoloads nil t)
     (require 'elpaca)
     (elpaca-generate-autoloads "elpaca" repo)
-    (load "./elpaca-autoloads")))
+    (let ((load-source-file-function nil)) (load "./elpaca-autoloads"))))
+(elpaca-bootstrap--warn-stale-pin
+ (expand-file-name "elpaca/" elpaca-sources-directory)
+ (plist-get (cdr elpaca-order) :ref))
 (add-hook 'after-init-hook #'elpaca-process-queues)
 (elpaca `(,@elpaca-order))
 (setq package-enable-at-startup nil)
@@ -127,13 +176,26 @@ worktrees, so use the main worktree, else master."
                    '("main" "master")))
         (t candidate)))
 
+;; Elpaca's repo name parser is private, and it was renamed once already.
+(defun elpaca-recipe-try-local--repo-name (repo)
+  "Return the repo name part of REPO, or nil with a warning if elpaca lacks it."
+  ;; A recipe can be normalized before elpaca has loaded its git backend.
+  (require 'elpaca-git nil t)
+  (cond ((fboundp 'elpaca-git--repo-name) (elpaca-git--repo-name repo))
+        ((fboundp 'elpaca--repo-name) (elpaca--repo-name repo))
+        (t (display-warning
+            'elpaca-try-local
+            (format "elpaca has no repo name function, so %s is fetched, not \
+taken from a local checkout. Update elpaca." repo))
+           nil)))
+
 (defun elpaca-recipe-try-local (recipe)
   "If RECIPE's :try-local keyword is non-nil, return :repo pointing at a
 local checkout of the package found under `local-repos-directory'
 \(searched in order); otherwise nil so elpaca fetches it normally."
   (when-let* (((plist-get recipe :try-local))
               (repo (plist-get recipe :repo))
-              (name (elpaca-git--repo-name repo))
+              (name (elpaca-recipe-try-local--repo-name repo))
               (dirs (if (listp local-repos-directory)
                         local-repos-directory
                       (list local-repos-directory)))
