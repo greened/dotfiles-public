@@ -27,6 +27,7 @@
 (defvar fst-messages)
 (defvar fst-extract-as)
 (defvar fst-symbols-found)
+(defvar fst-fc-cache-fails)
 
 (defun fst-os (text)
   "Parse TEXT as an os-release file."
@@ -386,7 +387,8 @@ SymbolsNerdFontMono-Regular.ttf\n10-nerd-font-symbols.conf\n"
 SHA is the expected archive hash. `fst-ran' collects each step as
 \(NAME . COMMAND), and `fst-dest' is the install directory. `fst-messages'
 collects what was reported. `fst-extract-as' says what the extract step
-leaves at the entry: `file', `symlink' or `directory'."
+leaves at the entry: `file', `symlink' or `directory'. When
+`fst-fc-cache-fails' is set, fc-cache fails as `font-setup--run' would."
   (declare (indent 2))
   `(let* ((root (make-temp-file "fst-" t))
           (fst-dest (expand-file-name "fonts" root))
@@ -394,13 +396,16 @@ leaves at the entry: `file', `symlink' or `directory'."
           (font-setup-download-sha256 ,sha)
           (system-type ,system)
           (fst-ran nil) (fst-tmp nil) (fst-messages nil)
-          (fst-extract-as 'file))
+          (fst-extract-as 'file) (fst-fc-cache-fails nil))
      (unwind-protect
          (cl-letf (((symbol-function 'font-setup--run)
-                    (lambda (name command tmp then)
+                    (lambda (name command tmp then &optional warn-only)
                       (push (cons name command) fst-ran)
                       (when tmp (setq fst-tmp tmp))
                       (pcase name
+                        ((and "fc-cache" (guard fst-fc-cache-fails))
+                         (when warn-only
+                           (funcall then "")))
                         ("curl"
                          ;; No handlers, or jka-compr would compress it.
                          (let ((file-name-handler-alist nil))
@@ -473,6 +478,76 @@ leaves at the entry: `file', `symlink' or `directory'."
                             "SymbolsNerdFontMono-Regular.ttf" fst-dest))
                #o644))
     (should-not (file-exists-p fst-tmp))))
+
+;; The stub cannot tell whether a failure is reported, so these drive
+;; the real sentinel with a stand-in process.
+(defmacro fst-with-finished-process (exit output &rest body)
+  "Run BODY with `make-process' stubbed to a process that exits with EXIT.
+OUTPUT is what it printed. `fst-messages' and `fst-warnings' collect what
+was reported."
+  (declare (indent 2))
+  `(let ((fst-messages nil) (fst-warnings nil))
+     (cl-letf (((symbol-function 'make-process)
+                (lambda (&rest plist)
+                  (with-current-buffer (plist-get plist :buffer)
+                    (insert ,output))
+                  (funcall (plist-get plist :sentinel) 'proc "finished")
+                  'proc))
+               ((symbol-function 'process-live-p) (lambda (_p) nil))
+               ((symbol-function 'process-status) (lambda (_p) 'exit))
+               ((symbol-function 'process-exit-status) (lambda (_p) ,exit))
+               ((symbol-function 'display-warning)
+                (lambda (_type msg &rest _) (push msg fst-warnings)))
+               ((symbol-function 'message)
+                (lambda (fmt &rest args)
+                  (push (apply #'format fmt args) fst-messages))))
+       ,@body)))
+
+(ert-deftest fst-run-warn-only-reports-the-failure-and-continues ()
+  "A failure under warn-only shows the output as a warning and calls THEN."
+  (fst-with-finished-process 1 "cannot write the cache\n"
+    (let ((got nil))
+      (font-setup--run "fc-cache" '("fc-cache") nil
+                       (lambda (out) (setq got (list out)))
+                       'warn-only)
+      (should (equal got '("cannot write the cache\n")))
+      (should (equal fst-warnings
+                     '("fc-cache failed: cannot write the cache"))))))
+
+(ert-deftest fst-run-without-warn-only-stops-on-a-failure ()
+  "A failure reports the output and does not call THEN."
+  (fst-with-finished-process 1 "no such file\n"
+    (let ((called nil))
+      (font-setup--run "tar-list" '("tar") nil (lambda (_) (setq called t)))
+      (should-not called)
+      (should-not fst-warnings)
+      (should (equal fst-messages
+                     '("font-setup: tar-list failed: no such file"))))))
+
+(ert-deftest fst-run-warn-only-continues-when-the-command-cannot-start ()
+  "A command that cannot be started under warn-only still calls THEN."
+  (let ((fst-warnings nil) (got nil))
+    (cl-letf (((symbol-function 'make-process)
+               (lambda (&rest _) (error "Searching for program")))
+              ((symbol-function 'display-warning)
+               (lambda (_type msg &rest _) (push msg fst-warnings))))
+      (font-setup--run "fc-cache" '("fc-cache") nil
+                       (lambda (out) (setq got (list out)))
+                       'warn-only))
+    (should (equal got '("")))
+    (should (equal fst-warnings
+                   '("fc-cache failed: Searching for program")))))
+
+(ert-deftest fst-install-finishes-when-fc-cache-fails ()
+  "The font is in place, so a failed fc-cache still ends in installed."
+  (fst-with-install 'gnu/linux (fst-good-sha)
+    (setq fst-fc-cache-fails t)
+    (font-setup-install-symbols)
+    (should (assoc "fc-cache" fst-ran))
+    (should (seq-find (lambda (m) (string-prefix-p "font-setup: installed" m))
+                      fst-messages))
+    (should (file-exists-p
+             (expand-file-name "SymbolsNerdFontMono-Regular.ttf" fst-dest)))))
 
 (ert-deftest fst-a-failed-rename-leaves-no-temp-file ()
   "A directory at the destination fails the install and leaves no part file."

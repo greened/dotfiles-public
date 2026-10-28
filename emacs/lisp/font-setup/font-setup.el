@@ -306,10 +306,11 @@ Ask nothing if the font or a decline appeared while the offer waited."
        (message "font-setup: install failed: %s" (error-message-string err))
        (font-setup--cleanup tmp)))))
 
-(defun font-setup--run (name command tmp then)
+(defun font-setup--run (name command tmp then &optional warn-only)
   "Run COMMAND, a list, asynchronously and call THEN with its output.
 NAME labels the process and any failure message. On a failure, TMP is
-deleted and THEN is not called."
+deleted and THEN is not called. With WARN-ONLY, a failure is shown as a
+warning instead and THEN is called anyway."
   (let ((buf (generate-new-buffer (format " *font-setup %s*" name))))
     (condition-case err
         (make-process
@@ -325,15 +326,28 @@ deleted and THEN is not called."
                             (zerop (process-exit-status proc))))
                    (out (with-current-buffer buf (buffer-string))))
                (kill-buffer buf)
-               (if ok
-                   (funcall then out)
-                 (message "font-setup: %s failed: %s" name (string-trim out))
-                 (font-setup--cleanup tmp))))))
+               (cond (ok (funcall then out))
+                     (warn-only
+                      (font-setup--warn-failure name (string-trim out))
+                      (funcall then out))
+                     (t
+                      (message "font-setup: %s failed: %s" name
+                               (string-trim out))
+                      (font-setup--cleanup tmp)))))))
       (error
        (kill-buffer buf)
-       (message "font-setup: cannot run %s: %s" name
-                (error-message-string err))
-       (font-setup--cleanup tmp)))))
+       (if (not warn-only)
+           (progn
+             (message "font-setup: cannot run %s: %s" name
+                      (error-message-string err))
+             (font-setup--cleanup tmp))
+         (font-setup--warn-failure name (error-message-string err))
+         (funcall then ""))))))
+
+(defun font-setup--warn-failure (name detail)
+  "Warn that NAME failed with DETAIL, its output or error."
+  ;; A warning, not a message, so the next message cannot hide it.
+  (display-warning 'font-setup (format "%s failed: %s" name detail)))
 
 (defun font-setup--sha256-ok-p (file expected)
   "Non-nil if the sha256 of FILE is EXPECTED."
@@ -424,9 +438,12 @@ The archive must match `font-setup-download-sha256'. Only
       (font-setup--cleanup tmp)
       (if (eq system-type 'darwin)
           (font-setup--finish dest)
+        ;; The font is already in place, so a failed fc-cache must not
+        ;; stop the install.
         (font-setup--run "fc-cache" (list "fc-cache" "-f" dir) nil
                          (font-setup--step
-                          nil (lambda (_out) (font-setup--finish dest))))))))
+                          nil (lambda (_out) (font-setup--finish dest)))
+                         'warn-only)))))
 
 (defun font-setup--finish (dest)
   "Apply the fonts again after DEST was installed, and say so."
