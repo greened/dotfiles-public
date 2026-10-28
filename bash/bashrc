@@ -135,12 +135,13 @@ esac
 
 setup_emacs
 setup_ssh
-setup_gpg
 
 # If not running interactively, don't do the rest.
 if [ -z "$PS1" ]; then
     return
 fi
+
+setup_gpg
 
 # don't put duplicate lines in the history; force ignoreboth
 export HISTCONTROL=$HISTCONTROL${HISTCONTROL+,}ignoredups
