@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Check the symlinked-parent guard in link-lib.sh:
+# Check the symlinked-parent guard and unlink_managed in link-lib.sh:
 #
 #     ./link-selftest.sh
 #
@@ -9,6 +9,9 @@
 # it only calls _dot_parent_ok, which decides and prints and never writes.
 # Nothing here runs link.sh or install.sh against a fake home: that is the very
 # thing that caused the damage.
+#
+# unlink_managed does remove links, so its cases run on links made here in the
+# scratch tree, with $HOME pointing into it.
 #
 # Cases 3-5 need $HOME to differ from the account's home, so they stub
 # _dot_account_home rather than depend on whoever is running this.  Case 0
@@ -71,6 +74,32 @@ HOME="$fake" check 1 'redirected home, parent links elsewhere' \
 # 7. Account home unreadable: $HOME is unvouched-for, so check it.
 _dot_account_home() { printf '\n'; }
 HOME="$fake" check 1 'no account home, parent links out' "$fake/link-outside/x"
+
+# unlink_managed: which obsolete links are retired, and which are left alone.
+uhome="$tmp/uhome"; mkdir -p "$uhome/dotfiles" "$uhome/lib/dotfiles"
+uelse="$tmp/uelse"; mkdir -p "$uelse/dotfiles"
+check_unlink() {  # want name dest, where want is gone or kept
+  local want="$1" name="$2" dest="$3" got=kept
+  HOME="$uhome" unlink_managed "$dest"
+  [ -e "$dest" ] || [ -L "$dest" ] || got=gone
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf 'ok   %s\n' "$name"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s (%s, want %s)\n' "$name" "$got" "$want"
+  fi
+}
+ln -s "$uhome/lib/dotfiles/x" "$uhome/.lib-link"
+check_unlink gone 'unlink: a link into lib/dotfiles' "$uhome/.lib-link"
+ln -s "$uhome/dotfiles/news/newsrc-dribble" "$uhome/.newsrc-dribble"
+check_unlink gone 'unlink: a link into the old ~/dotfiles' "$uhome/.newsrc-dribble"
+ln -s "$uelse/dotfiles/x" "$uhome/.else-link"
+check_unlink kept 'unlink: a dotfiles directory outside $HOME' "$uhome/.else-link"
+ln -s "$uhome/dotfiles-other/x" "$uhome/.near-link"
+check_unlink kept 'unlink: a sibling named like dotfiles' "$uhome/.near-link"
+ln -s "$uhome/dotfiles" "$uhome/.whole-link"
+check_unlink kept 'unlink: the old checkout itself' "$uhome/.whole-link"
+: > "$uhome/.real-file"
+check_unlink kept 'unlink: a real file' "$uhome/.real-file"
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

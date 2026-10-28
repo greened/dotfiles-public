@@ -82,6 +82,9 @@ unlink_managed() {  # dest — retire an obsolete link, but ONLY if it is a syml
   t="$(readlink "$dest")"
   case "$t" in
     */lib/dotfiles/*|*/lib/dotfiles-overlays/*|lib/dotfiles/*|lib/dotfiles-overlays/*) rm -f "$dest" ;;
+    # The checkout before the overlays. Only the one in this $HOME, since a
+    # dotfiles directory anywhere else is not one an install made.
+    "${HOME:?}"/dotfiles/*) rm -f "$dest" ;;
   esac
 }
 
