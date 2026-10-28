@@ -92,6 +92,26 @@ A landing script that writes no `.nonce` gets the older behavior: the
 sentinel is the epoch at `CLAUDE_COMMIT_MSG.closed`, and the reader requires
 a stamp no older than its own gate.
 
+## Accepting a claim with C-c C-a
+
+The landing script may list claims the diff neither shows nor contradicts,
+one `# claim-unsupported ID TEXT` line each, below the last scissors line.
+`C-c C-a` accepts one claim: the one on point's line, or one chosen by its
+text. It shows the claim and accepts it only when you type `yes` in full.
+The header line counts the accepted claims, and each accepted line is
+marked. Both follow your edits. `C-c C-a` on an accepted claim unaccepts
+it without asking.
+
+The id must be the first 16 hex characters of the SHA-256 of the claim's
+UTF-8 text. A line whose id does not match was edited and cannot be
+accepted. A claim line above the scissors is part of the message and is
+never read.
+
+On `C-x #` the stamp is the nonce, then one `accept ID` line for each
+accepted claim whose line is still unedited. With nothing accepted it is the
+bare nonce. A gate with no `.nonce` cannot accept a claim. A claim left in
+the message unaccepted refuses the landing, so cut each one or accept it.
+
 ## Two warnings in the buffer
 
 A file named like a gate but not exactly `CLAUDE_COMMIT_MSG`, such as

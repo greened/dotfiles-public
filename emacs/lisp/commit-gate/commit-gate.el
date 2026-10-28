@@ -85,6 +85,12 @@
 ;; A real gate is labelled too. Its header line names the repository and the
 ;; two keys. He kills a buffer he cannot identify, and `C-x k' discards the
 ;; message as quietly as `C-x #' approves it.
+;;
+;; commit-land may list claims below the scissors line that the diff neither
+;; shows nor contradicts. `C-c C-a' accepts one after asking, and on a claim
+;; already accepted it unaccepts it. `C-x #' then writes an `accept ID' line
+;; for each accepted claim after the nonce. The id is checked against the
+;; claim's text, so an edited line cannot be accepted.
 
 ;;; Code:
 
@@ -195,17 +201,239 @@ git would block on a TRAMP gate. A worktree or a submodule is named too."
                      (concat ", submodule " (car (last mods))))
                 (and wt (concat ", worktree " wt)))))))
 
+(defvar-local commit-gate--refused nil
+  "Why the last `C-x #' in this gate was refused, or nil.
+The banner keeps it in view, so accepting a claim cannot hide it.")
+
 (defun commit-gate-show-banner ()
   "Name the repository and the keys in the header line of a gate.
 Does nothing unless the current buffer is `commit-gate-buffer-p'. Written
 for `server-visit-hook'."
   (when (commit-gate-buffer-p)
-    (let* ((repo (ignore-errors (commit-gate-repo-label (buffer-file-name))))
-           (text (format "Commit gate%s. C-x # approves. C-x k discards."
-                         (if repo (concat " for " repo) ""))))
-      ;; A % in the header line is a format code, and a path can hold one.
-      (setq-local header-line-format
-                  (propertize (string-replace "%" "%%" text) 'face 'success)))))
+    (commit-gate--draw-banner (ignore-errors (commit-gate--claims)))))
+
+(defun commit-gate--draw-banner (claims)
+  "Set the header line of a gate that lists CLAIMS."
+  (let* ((why commit-gate--refused)
+         (repo (ignore-errors (commit-gate-repo-label (buffer-file-name))))
+         (text (concat
+                  (if why
+                      (concat "Not approved. " why ".")
+                    (format "Commit gate%s. C-x # approves. C-x k discards."
+                            (if repo (concat " for " repo) "")))
+                  (and claims
+                       (format " %d of %d listed claims accepted with C-c C-a. \
+A claim left in the message unaccepted refuses the landing."
+                               (length (commit-gate--accepted-ids claims))
+                               (length claims))))))
+    ;; A % in the header line is a format code, and a path can hold one.
+    (setq-local header-line-format
+                (propertize (string-replace "%" "%%" text)
+                            'face (if why 'warning 'success)))))
+
+;;; Claims David may accept
+
+(defconst commit-gate-scissors
+  "# ------------------------ >8 ------------------------"
+  "The line commit-land puts above the diff half of a gate.")
+
+(defvar-local commit-gate--accepted-claims nil
+  "The ids of the claims accepted in this gate with `C-c C-a', oldest first.")
+
+(defun commit-gate--claim-id (text &optional coding)
+  "The id commit-land gives the claim TEXT, read from a file in CODING.
+CODING defaults to UTF-8. The id is the SHA-256 of the claim's UTF-8 bytes.
+Encoding TEXT back in the coding the file was read with gives the bytes the
+file held, for any coding that round-trips. One that does not gives another
+id, so the claim cannot be accepted."
+  (substring (secure-hash 'sha256
+                          (encode-coding-string text (or coding 'utf-8-unix) t))
+             0 16))
+
+(defun commit-gate--file-coding ()
+  "The coding system that turns this buffer's text back into its file's bytes.
+A raw byte elsewhere in the diff makes Emacs read the whole file as Latin-1,
+and then UTF-8 would hash other bytes than the file held."
+  (let ((cs (and buffer-file-coding-system
+                 (coding-system-change-eol-conversion
+                  buffer-file-coding-system 'unix))))
+    (if (or (null cs) (eq (coding-system-type cs) 'undecided))
+        'utf-8-unix
+      cs)))
+
+(defvar-local commit-gate--scissors nil
+  "A marker at the scissors line the claims were last read below.")
+
+(defun commit-gate--claims ()
+  "The claim lines below the last scissors line, as (ID TEXT VALID BEG END).
+VALID is nil when ID is not the id of TEXT, because the line was edited.
+The message half is David's text, so nothing above the scissors is read."
+  (save-excursion
+    (save-restriction
+      (widen)
+      (goto-char (point-max))
+      (let ((case-fold-search nil)
+            (coding (commit-gate--file-coding))
+            claims)
+        (if (not (re-search-backward
+                  (concat "^" (regexp-quote commit-gate-scissors) "$") nil t))
+            (and commit-gate--scissors (set-marker commit-gate--scissors nil))
+          (set-marker (or commit-gate--scissors
+                          (setq commit-gate--scissors (make-marker)))
+                      (point))
+          (forward-line 1)
+          (while (re-search-forward
+                  "^# claim-unsupported \\([0-9a-f]\\{16\\}\\) \\(.*\\)$" nil t)
+            (let ((id (match-string-no-properties 1))
+                  (text (match-string-no-properties 2)))
+              (push (list id text (equal id (commit-gate--claim-id text coding))
+                          (match-beginning 0) (match-end 0))
+                    claims))))
+        (nreverse claims)))))
+
+(defun commit-gate--accepted-ids (claims)
+  "The accepted ids that still name a valid line in CLAIMS, in accept order."
+  (seq-filter (lambda (id)
+                (seq-some (lambda (c) (and (nth 2 c) (equal (car c) id)))
+                          claims))
+              commit-gate--accepted-claims))
+
+(defun commit-gate--clear-marks ()
+  "Remove every accepted claim mark from the buffer."
+  (save-restriction
+    (widen)
+    (remove-overlays (point-min) (point-max) 'commit-gate-claim t)))
+
+(defun commit-gate--mark-claims (claims)
+  "Mark each accepted line of CLAIMS, and clear the marks of any other."
+  (commit-gate--clear-marks)
+  (let ((ids (commit-gate--accepted-ids claims)))
+    (dolist (c claims)
+      (when (and (nth 2 c) (member (car c) ids))
+        (let ((ov (make-overlay (nth 3 c) (nth 4 c))))
+          (overlay-put ov 'commit-gate-claim t)
+          (overlay-put ov 'face 'success)
+          (overlay-put ov 'after-string
+                       (propertize "  [accepted]" 'face 'success)))))))
+
+(defun commit-gate--pick-claim (claims)
+  "The claim in CLAIMS on point's line, or the one chosen from a list."
+  (or (seq-find (lambda (c) (<= (nth 3 c) (point) (nth 4 c))) claims)
+      (let ((choice (completing-read "Accept or unaccept which claim? "
+                                     (mapcar #'cadr claims) nil t)))
+        (seq-find (lambda (c) (equal (cadr c) choice)) claims))))
+
+(defun commit-gate-accept-claim ()
+  "Accept one UNSUPPORTED claim the gate lists, after asking.
+The claim is the one on point's line, or one chosen from the list. Its id
+goes into the gate's stamp when `C-x #' approves. On a claim already
+accepted, unaccept it."
+  (interactive)
+  (unless (commit-gate-buffer-p)
+    (user-error "Not a commit gate"))
+  (let ((claims (commit-gate--claims)))
+    (cond
+     ((null claims)
+      (message "This gate lists no claims to accept."))
+     ((eq commit-gate-nonce 'absent)
+      ;; Only a run directory's stamp can carry an accept.
+      (user-error "This gate has no run nonce, so it cannot accept a claim"))
+     (t
+      (let ((c (commit-gate--pick-claim claims)))
+        (cond
+         ((null c) (user-error "No claim chosen"))
+         ((not (nth 2 c))
+          (user-error "This claim line was edited, so its id does not match \
+its text. Cut the claim from the message, or C-x k and rerun commit-land"))
+         ;; Unaccepting needs no typed yes: it only drops an accept.
+         ((member (car c) commit-gate--accepted-claims)
+          (setq commit-gate--accepted-claims
+                (delete (car c) commit-gate--accepted-claims))
+          (commit-gate--mark-claims claims)
+          (commit-gate--draw-banner claims)
+          (message "Unaccepted."))
+         ;; Typed out in full, because his `yes-or-no-p' takes one key.
+         ((equal (read-string
+                  (format "Accept this claim? %s\nType yes to accept it: "
+                          (cadr c)))
+                 "yes")
+          (setq commit-gate--accepted-claims
+                (append commit-gate--accepted-claims (list (car c))))
+          (commit-gate--mark-claims claims)
+          (commit-gate--draw-banner claims)
+          (message "Accepted. C-x # writes it with the approval."))
+         (t (message "Not accepted."))))))))
+
+(defvar commit-gate-claims-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "C-c C-a") #'commit-gate-accept-claim)
+    map)
+  "Keys for a commit gate buffer.")
+
+(defun commit-gate--refresh-claims (_beg end _len)
+  "Redraw the claim marks and the banner count after an edit ending at END.
+Written for `after-change-functions', so no error may reach his editing."
+  (save-match-data
+    (let ((m commit-gate--scissors))
+      ;; An edit above an intact last scissors line cannot change the
+      ;; claims, so typing in the message skips the scan of the diff.
+      (unless (ignore-errors
+                (and (marker-position m)
+                     (< end m)
+                     (save-excursion
+                       (goto-char m)
+                       (and (bolp)
+                            (looking-at (concat (regexp-quote
+                                                 commit-gate-scissors)
+                                                "$"))))))
+        (let ((claims (ignore-errors (commit-gate--claims))))
+          (ignore-errors (commit-gate--mark-claims claims))
+          (ignore-errors (commit-gate--draw-banner claims)))))))
+
+(define-minor-mode commit-gate-claims-mode
+  "Accept a claim the commit gate lists with \\[commit-gate-accept-claim]."
+  :lighter nil
+  :keymap commit-gate-claims-mode-map
+  (if commit-gate-claims-mode
+      (progn
+        (add-hook 'after-change-functions #'commit-gate--refresh-claims nil t)
+        ;; A new major mode, as a revert sets, drops the accepts but not
+        ;; the marks.
+        (add-hook 'change-major-mode-hook #'commit-gate--clear-marks nil t)
+        (add-hook 'after-revert-hook #'commit-gate--restore-after-revert nil t))
+    (remove-hook 'after-change-functions #'commit-gate--refresh-claims t)
+    (remove-hook 'change-major-mode-hook #'commit-gate--clear-marks t)
+    (remove-hook 'after-revert-hook #'commit-gate--restore-after-revert t)
+    (commit-gate--clear-marks)))
+
+(defun commit-gate--restore-after-revert ()
+  "Turn the claims mode and the banner back on after a revert.
+The major mode a revert sets drops both. The accepts stay dropped."
+  (when (commit-gate-buffer-p)
+    (commit-gate-show-claims)
+    (commit-gate-show-banner)))
+;; Kept through the major mode change, because that change is what it repairs.
+(put 'commit-gate--restore-after-revert 'permanent-local-hook t)
+
+(defun commit-gate-show-claims ()
+  "Turn on `commit-gate-claims-mode' in a gate and mark accepted claims.
+Does nothing unless the current buffer is `commit-gate-buffer-p'. Written
+for `server-visit-hook'."
+  (when (commit-gate-buffer-p)
+    (commit-gate-claims-mode 1)
+    (ignore-errors (commit-gate--mark-claims (commit-gate--claims)))))
+
+(defun commit-gate--sentinel-text (stamp nonce accepts)
+  "What the sentinel holds for the accept at STAMP of the run NONCE.
+With a nonce, the nonce and then one `accept ID' line per id in ACCEPTS.
+With none accepted it is the bare nonce. Without a nonce it is STAMP, since
+an epoch stamp never carries an accept."
+  (cond
+   ((null nonce) stamp)
+   ((null accepts) nonce)
+   (t (concat nonce
+              (mapconcat (lambda (id) (concat "\naccept " id)) accepts "")
+              "\n"))))
 
 (defun commit-gate--sentinel-for (file &optional nonce)
   "The sentinel path for the gate at FILE.
@@ -394,11 +622,12 @@ sentinel appends long afterwards and nothing holds the directory open."
   (write-region (format "sentinel %s %s\n" stamp outcome)
                 nil (commit-gate--record-file gate) 'append 'quiet))
 
-(defun commit-gate--spawn-remote (gate stamp &optional nonce)
+(defun commit-gate--spawn-remote (gate stamp &optional nonce accepts)
   "Start the sentinel write for the remote GATE, stamped STAMP.
-With NONCE the sentinel holds the nonce, and STAMP only names the outcome
-line. Returns as soon as the process starts, so `C-x #' never waits on the
-network. The outcome reaches the local record through the process sentinel."
+With NONCE the sentinel holds the nonce and the ids in ACCEPTS, and STAMP
+only names the outcome line. Returns as soon as the process starts, so
+`C-x #' never waits on the network. The outcome reaches the local record
+through the process sentinel."
   (let ((method (file-remote-p gate 'method))
         (user (file-remote-p gate 'user))
         (host (file-remote-p gate 'host)))
@@ -420,7 +649,8 @@ network. The outcome reaches the local record through the process sentinel."
                    (let ((target (file-local-name
                                   (commit-gate--sentinel-for gate nonce))))
                      (format "printf %%s %s > %s && mv -f %s %s"
-                             (shell-quote-argument (or nonce stamp))
+                             (shell-quote-argument
+                              (commit-gate--sentinel-text stamp nonce accepts))
                              (shell-quote-argument (concat target ".tmp"))
                              (shell-quote-argument (concat target ".tmp"))
                              (shell-quote-argument target))))))
@@ -443,7 +673,9 @@ network. The outcome reaches the local record through the process sentinel."
 (defun commit-gate--write-local-sentinel (file text)
   "Write TEXT to the local sentinel FILE, renamed into place.
 A reader polling for the sentinel must never see half of it."
-  (let ((tmp (concat file ".tmp")))
+  (let ((tmp (concat file ".tmp"))
+        ;; A gate read with DOS line ends would otherwise write CRLF.
+        (coding-system-for-write 'no-conversion))
     (write-region text nil tmp nil 'quiet)
     (rename-file tmp file t)))
 
@@ -461,7 +693,10 @@ Signals a `user-error' for a gate whose nonce cannot approve, which stops
   (let* ((gate (ignore-errors (and (commit-gate-buffer-p) (buffer-file-name))))
          (state (and gate commit-gate-nonce))
          (nonce (and (eq (car-safe state) 'nonce) (cdr state)))
-         (stamp (format-time-string "%s")))
+         (stamp (format-time-string "%s"))
+         (accepts (and nonce (ignore-errors
+                               (commit-gate--accepted-ids
+                                (commit-gate--claims))))))
     (when gate
       ;; The repeat runs before the reason is built, so a spawn that fails
       ;; reports its refusal and never promises a read that is not running.
@@ -474,10 +709,8 @@ Signals a `user-error' for a gate whose nonce cannot approve, which stops
                        (commit-gate--refusal shown
                                              (commit-gate--nonce-file gate)))))
         (when why
-          (setq-local header-line-format
-                      (propertize (string-replace
-                                   "%" "%%" (concat "Not approved. " why "."))
-                                  'face 'warning))
+          (setq commit-gate--refused why)
+          (commit-gate-show-banner)
           (user-error "Commit gate not approved: %s" why)))
       ;; Local first, because it is the record that cannot be lost to a
       ;; network. Each write is guarded on its own, so a failure of one still
@@ -485,9 +718,10 @@ Signals a `user-error' for a gate whose nonce cannot approve, which stops
       (ignore-errors (commit-gate--write-record gate stamp nonce))
       (ignore-errors
         (if (file-remote-p gate)
-            (commit-gate--spawn-remote gate stamp nonce)
+            (commit-gate--spawn-remote gate stamp nonce accepts)
           (commit-gate--write-local-sentinel
-           (commit-gate--sentinel-for gate nonce) (or nonce stamp))
+           (commit-gate--sentinel-for gate nonce)
+           (commit-gate--sentinel-text stamp nonce accepts))
           (commit-gate--record-outcome gate stamp "written")))
       (setq commit-gate--pending-announcement
             (list (current-buffer)
@@ -558,6 +792,7 @@ A nil result means UNPROVEN. It does not mean the message was refused."
 
 (defun commit-gate-arm ()
   "Install the recorder, its message, the nonce read and both header lines.
+It also turns on `commit-gate-claims-mode' in each gate.
 Adding the same function twice does not stack a second copy, so this is safe
 to re-run when the configuration is reloaded."
   (advice-add 'server-done :before #'commit-gate-record-accept)
@@ -565,7 +800,8 @@ to re-run when the configuration is reloaded."
   (add-hook 'find-file-hook #'commit-gate-capture-nonce)
   (add-hook 'server-visit-hook #'commit-gate-capture-nonce)
   (add-hook 'server-visit-hook #'commit-gate-warn-if-misnamed)
-  (add-hook 'server-visit-hook #'commit-gate-show-banner))
+  (add-hook 'server-visit-hook #'commit-gate-show-banner)
+  (add-hook 'server-visit-hook #'commit-gate-show-claims))
 
 (provide 'commit-gate)
 

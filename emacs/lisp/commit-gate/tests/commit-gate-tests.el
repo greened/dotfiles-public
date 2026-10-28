@@ -615,6 +615,621 @@ refusal and does not promise a read that is not running."
       (should (equal (commit-gate-t--contents closed) commit-gate-t--nonce-a))
       (should-not (file-exists-p (concat closed ".tmp"))))))
 
+;;; Accepting a claim
+
+;; The ids are from sha256sum, so a fault in the id rule cannot hide behind
+;; the same fault in the test.
+(defconst commit-gate-t--claim-a "David wanted it for his own reasons."
+  "A claim the diff neither shows nor contradicts.")
+(defconst commit-gate-t--id-a "ff851277bfb974d6"
+  "The id of `commit-gate-t--claim-a'.")
+(defconst commit-gate-t--claim-b "The cache is cold on the first run."
+  "A second such claim.")
+(defconst commit-gate-t--id-b "bed67787c60bb632"
+  "The id of `commit-gate-t--claim-b'.")
+
+(defun commit-gate-t--claim (id text)
+  "The claim line commit-land writes for TEXT with ID."
+  (format "# claim-unsupported %s %s\n" id text))
+
+(defun commit-gate-t--gate-text (message &rest claim-lines)
+  "A gate holding MESSAGE above the scissors and CLAIM-LINES below it."
+  (concat message
+          commit-gate-scissors "\n"
+          "# Do not modify or remove the line above.\n"
+          "# Everything below it is the staged diff, for review only.\n"
+          (if claim-lines
+              (concat "#\n# The diff neither shows nor contradicts these claims.\n"
+                      (apply #'concat claim-lines)
+                      "#\n")
+            "")
+          "diff --git a/f b/f\n"))
+
+(defun commit-gate-t--claim-gate (dir text)
+  "A run directory gate under DIR for `commit-gate-t--nonce-a' holding TEXT."
+  (let ((gate (commit-gate-t--run-dir dir commit-gate-t--nonce-a)))
+    (with-temp-file gate (insert text))
+    gate))
+
+(defun commit-gate-t--closed (gate)
+  "The contents of the `.closed' beside GATE, read as raw bytes."
+  (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (insert-file-contents-literally
+     (expand-file-name ".closed" (file-name-directory gate)))
+    (buffer-string)))
+
+(defmacro commit-gate-t--answering (answer &rest body)
+  "Run BODY with every typed answer ANSWER, quietly.
+His `yes-or-no-p' takes one key, so the gate must not ask through it."
+  (declare (indent 1))
+  `(let ((inhibit-message t))
+     (cl-letf (((symbol-function 'read-string) (lambda (&rest _) ,answer))
+               ((symbol-function 'yes-or-no-p)
+                (lambda (_p) (error "asked through yes-or-no-p"))))
+       ,@body)))
+
+(defun commit-gate-t--goto-claim (text)
+  "Move point onto the claim line for TEXT below the scissors."
+  (goto-char (point-max))
+  (search-backward (concat " " text)))
+
+(defun commit-gate-t--accepted-marks ()
+  "The accepted claim marks in the current buffer."
+  (seq-filter (lambda (ov) (overlay-get ov 'commit-gate-claim))
+              (overlays-in (point-min) (point-max))))
+
+(ert-deftest commit-gate-reads-claims-only-below-the-last-scissors ()
+  "The message half is David's text, so a claim line there, or a copy of the
+scissors line with a claim after it, is never a claim."
+  (commit-gate-t--with-name "/tmp/x/.git/CLAUDE_COMMIT_MSG"
+    (insert "Subject\n\n"
+            (commit-gate-t--claim commit-gate-t--id-b commit-gate-t--claim-b)
+            commit-gate-scissors "\n"
+            (commit-gate-t--claim commit-gate-t--id-b commit-gate-t--claim-b)
+            (commit-gate-t--gate-text
+             "" (commit-gate-t--claim commit-gate-t--id-a
+                                      commit-gate-t--claim-a)))
+    (should (equal (mapcar (lambda (c) (list (nth 0 c) (nth 1 c) (nth 2 c)))
+                           (commit-gate--claims))
+                   (list (list commit-gate-t--id-a commit-gate-t--claim-a t))))))
+
+(ert-deftest commit-gate-reads-no-claims-without-a-scissors-line ()
+  "A claim line with no scissors below it is all message."
+  (commit-gate-t--with-name "/tmp/x/.git/CLAUDE_COMMIT_MSG"
+    (insert (commit-gate-t--claim commit-gate-t--id-a commit-gate-t--claim-a))
+    (should-not (commit-gate--claims))))
+
+(ert-deftest commit-gate-claim-id-is-the-sha256-of-the-utf-8-text ()
+  "The rule commit-land uses, including for a character outside ASCII."
+  (should (equal (commit-gate--claim-id commit-gate-t--claim-a)
+                 commit-gate-t--id-a))
+  (should (equal (commit-gate--claim-id "The naïve path was slower.")
+                 "689dc2163752358a")))
+
+(ert-deftest commit-gate-cannot-accept-a-claim-whose-id-does-not-match ()
+  "A mismatch means the line was edited, so it is refused before he is asked."
+  (commit-gate-t--in-dir dir
+    (let ((gate (commit-gate-t--claim-gate
+                 dir (commit-gate-t--gate-text
+                      "Subject\n"
+                      (commit-gate-t--claim commit-gate-t--id-a
+                                            commit-gate-t--claim-b)))))
+      (commit-gate-t--visit gate
+        (should-not (nth 2 (car (commit-gate--claims))))
+        (commit-gate-t--goto-claim commit-gate-t--claim-b)
+        (cl-letf (((symbol-function 'read-string)
+                   (lambda (&rest _) (error "asked about an edited claim"))))
+          (let ((err (should-error (commit-gate-accept-claim)
+                                   :type 'user-error)))
+            (should (string-match-p "was edited" (cadr err)))))
+        (should-not commit-gate--accepted-claims)
+        (commit-gate-record-accept))
+      (should (equal (commit-gate-t--closed gate) commit-gate-t--nonce-a)))))
+
+(ert-deftest commit-gate-stamp-line-one-is-the-bare-nonce ()
+  "commit-land matches line one against the run's nonce exactly."
+  (commit-gate-t--in-dir dir
+    (let ((gate (commit-gate-t--claim-gate
+                 dir (commit-gate-t--gate-text
+                      "Subject\n"
+                      (commit-gate-t--claim commit-gate-t--id-a
+                                            commit-gate-t--claim-a)))))
+      (commit-gate-t--visit gate
+        (commit-gate-t--goto-claim commit-gate-t--claim-a)
+        (commit-gate-t--answering "yes" (commit-gate-accept-claim))
+        (commit-gate-record-accept))
+      (should (equal (car (split-string (commit-gate-t--closed gate) "\n"))
+                     commit-gate-t--nonce-a)))))
+
+(ert-deftest commit-gate-no-accepts-writes-the-old-stamp-locally ()
+  "A gate that lists claims but has none accepted writes the bare nonce with
+no newline."
+  (commit-gate-t--in-dir dir
+    (let ((gate (commit-gate-t--claim-gate
+                 dir (commit-gate-t--gate-text
+                      "Subject\n"
+                      (commit-gate-t--claim commit-gate-t--id-a
+                                            commit-gate-t--claim-a)))))
+      (commit-gate-t--visit gate (commit-gate-record-accept))
+      (should (equal (commit-gate-t--closed gate) commit-gate-t--nonce-a)))))
+
+(ert-deftest commit-gate-one-accept-writes-an-accept-line-locally ()
+  "The id written is the one recomputed from the claim's text."
+  (commit-gate-t--in-dir dir
+    (let ((gate (commit-gate-t--claim-gate
+                 dir (commit-gate-t--gate-text
+                      "Subject\n"
+                      (commit-gate-t--claim commit-gate-t--id-a
+                                            commit-gate-t--claim-a)
+                      (commit-gate-t--claim commit-gate-t--id-b
+                                            commit-gate-t--claim-b)))))
+      (commit-gate-t--visit gate
+        (commit-gate-t--goto-claim commit-gate-t--claim-a)
+        (commit-gate-t--answering "yes" (commit-gate-accept-claim))
+        (commit-gate-record-accept))
+      (should (equal (commit-gate-t--closed gate)
+                     (concat commit-gate-t--nonce-a "\naccept "
+                             commit-gate-t--id-a "\n")))
+      (should-not (file-exists-p
+                   (expand-file-name ".closed.tmp"
+                                     (file-name-directory gate)))))))
+
+(defun commit-gate-t--remote-accept (dir accept)
+  "Approve a remote gate under DIR over the shim, accepting the first claim
+when ACCEPT is non-nil, and return the stamp written."
+  (let* ((local (commit-gate-t--claim-gate
+                 dir (commit-gate-t--gate-text
+                      "Subject\n"
+                      (commit-gate-t--claim commit-gate-t--id-a
+                                            commit-gate-t--claim-a)))))
+    (commit-gate-t--with-name (concat "/scp:u@dev:" local)
+      (insert-file-contents local)
+      (setq commit-gate-nonce (cons 'nonce commit-gate-t--nonce-a))
+      (when accept
+        (commit-gate-t--goto-claim commit-gate-t--claim-a)
+        (commit-gate-t--answering "yes" (commit-gate-accept-claim)))
+      (commit-gate-record-accept)
+      (commit-gate-t--settle (get-process "commit-gate-sentinel")))
+    (should-not (file-exists-p
+                 (expand-file-name ".closed.tmp" (file-name-directory local))))
+    (commit-gate-t--closed local)))
+
+(ert-deftest commit-gate-no-accepts-writes-the-old-stamp-remotely ()
+  "The remote write is byte for byte the bare nonce when nothing is accepted."
+  (commit-gate-t--with-ssh-shim dir _argv
+    (should (equal (commit-gate-t--remote-accept dir nil)
+                   commit-gate-t--nonce-a))))
+
+(ert-deftest commit-gate-one-accept-writes-an-accept-line-remotely ()
+  "The multi-line payload survives the far side's shell intact."
+  (commit-gate-t--with-ssh-shim dir _argv
+    (should (equal (commit-gate-t--remote-accept dir t)
+                   (concat commit-gate-t--nonce-a "\naccept "
+                           commit-gate-t--id-a "\n")))))
+
+(ert-deftest commit-gate-accepting-an-accepted-claim-unaccepts-it ()
+  "A second C-c C-a takes the accept back, and a third records it once."
+  (commit-gate-t--in-dir dir
+    (let ((gate (commit-gate-t--claim-gate
+                 dir (commit-gate-t--gate-text
+                      "Subject\n"
+                      (commit-gate-t--claim commit-gate-t--id-a
+                                            commit-gate-t--claim-a)))))
+      (commit-gate-t--visit gate
+        (commit-gate-show-claims)
+        (commit-gate-show-banner)
+        (commit-gate-t--goto-claim commit-gate-t--claim-a)
+        (commit-gate-t--answering "yes"
+          (commit-gate-accept-claim))
+        (should (equal commit-gate--accepted-claims
+                       (list commit-gate-t--id-a)))
+        (should (commit-gate-t--accepted-marks))
+        ;; Unaccepting drops an accept, so it must not ask.
+        (cl-letf (((symbol-function 'read-string)
+                   (lambda (&rest _) (error "asked to unaccept")))
+                  (inhibit-message t))
+          (commit-gate-accept-claim))
+        (should-not commit-gate--accepted-claims)
+        (should-not (commit-gate-t--accepted-marks))
+        (should (string-match-p "0 of 1 listed claims accepted"
+                                header-line-format))
+        (commit-gate-t--answering "yes"
+          (commit-gate-accept-claim))
+        (should (equal commit-gate--accepted-claims
+                       (list commit-gate-t--id-a)))
+        (commit-gate-record-accept))
+      (should (equal (commit-gate-t--closed gate)
+                     (concat commit-gate-t--nonce-a "\naccept "
+                             commit-gate-t--id-a "\n"))))))
+
+(ert-deftest commit-gate-accept-with-no-claim-lines-writes-nothing ()
+  "There is nothing to ask about, so he is not asked and no stamp appears.
+The approval then writes the bare nonce."
+  (commit-gate-t--in-dir dir
+    (let* ((gate (commit-gate-t--claim-gate
+                  dir (commit-gate-t--gate-text "Subject\n")))
+           (closed (expand-file-name ".closed" (file-name-directory gate))))
+      (commit-gate-t--visit gate
+        (cl-letf (((symbol-function 'read-string)
+                   (lambda (&rest _) (error "asked with no claims"))))
+          (let ((inhibit-message t))
+            (should (equal (commit-gate-accept-claim)
+                           "This gate lists no claims to accept."))))
+        (should-not commit-gate--accepted-claims)
+        (should-not (file-exists-p closed))
+        (commit-gate-record-accept))
+      (should (equal (commit-gate-t--closed gate) commit-gate-t--nonce-a)))))
+
+(defun commit-gate-t--decline-with (answer)
+  "Answer ANSWER to the accept prompt, and check the claim stays unaccepted."
+  (commit-gate-t--in-dir dir
+    (let ((gate (commit-gate-t--claim-gate
+                 dir (commit-gate-t--gate-text
+                      "Subject\n"
+                      (commit-gate-t--claim commit-gate-t--id-a
+                                            commit-gate-t--claim-a)))))
+      (commit-gate-t--visit gate
+        (commit-gate-t--goto-claim commit-gate-t--claim-a)
+        (commit-gate-t--answering answer (commit-gate-accept-claim))
+        (should-not commit-gate--accepted-claims)
+        (commit-gate-record-accept))
+      (should (equal (commit-gate-t--closed gate) commit-gate-t--nonce-a)))))
+
+;; Anything but yes typed in full leaves the claim unaccepted.
+(ert-deftest commit-gate-declined-accept-no ()
+  "A plain no."
+  (commit-gate-t--decline-with "no"))
+
+(ert-deftest commit-gate-declined-accept-y ()
+  "A single y is what his one-key `yes-or-no-p' would have taken."
+  (commit-gate-t--decline-with "y"))
+
+(ert-deftest commit-gate-declined-accept-empty ()
+  "Return alone."
+  (commit-gate-t--decline-with ""))
+
+(ert-deftest commit-gate-declined-accept-yes-please ()
+  "Trailing text after yes."
+  (commit-gate-t--decline-with "yes please"))
+
+(ert-deftest commit-gate-declined-accept-leading-space ()
+  "A space before yes."
+  (commit-gate-t--decline-with " yes"))
+
+(ert-deftest commit-gate-declined-accept-upper-case ()
+  "YES in capitals."
+  (commit-gate-t--decline-with "YES"))
+
+(ert-deftest commit-gate-asks-which-claim-off-a-claim-line ()
+  "Off a claim line the claim is chosen by its text, and the prompt shows it."
+  (commit-gate-t--in-dir dir
+    (let ((gate (commit-gate-t--claim-gate
+                 dir (commit-gate-t--gate-text
+                      "Subject\n"
+                      (commit-gate-t--claim commit-gate-t--id-a
+                                            commit-gate-t--claim-a)
+                      (commit-gate-t--claim commit-gate-t--id-b
+                                            commit-gate-t--claim-b))))
+          (asked nil))
+      (commit-gate-t--visit gate
+        (goto-char (point-min))
+        (cl-letf (((symbol-function 'completing-read)
+                   (lambda (_p coll &rest _)
+                     (should (equal coll (list commit-gate-t--claim-a
+                                               commit-gate-t--claim-b)))
+                     commit-gate-t--claim-b))
+                  ((symbol-function 'read-string)
+                   (lambda (p &rest _) (setq asked p) "yes")))
+          (let ((inhibit-message t))
+            (commit-gate-accept-claim)))
+        (should (string-match-p (regexp-quote commit-gate-t--claim-b) asked))
+        (should (equal commit-gate--accepted-claims
+                       (list commit-gate-t--id-b)))))))
+
+(ert-deftest commit-gate-epoch-gate-cannot-accept-a-claim ()
+  "An epoch stamp carries no accept lines, so the accept is refused."
+  (commit-gate-t--in-dir dir
+    (let ((gate (expand-file-name "CLAUDE_COMMIT_MSG" dir)))
+      (with-temp-file gate
+        (insert (commit-gate-t--gate-text
+                 "Subject\n"
+                 (commit-gate-t--claim commit-gate-t--id-a
+                                       commit-gate-t--claim-a))))
+      (commit-gate-t--visit gate
+        (should (eq commit-gate-nonce 'absent))
+        (commit-gate-t--goto-claim commit-gate-t--claim-a)
+        (commit-gate-t--answering "yes"
+          (should-error (commit-gate-accept-claim) :type 'user-error))
+        (should-not commit-gate--accepted-claims)))))
+
+(ert-deftest commit-gate-banner-counts-accepted-claims-and-marks-them ()
+  "The banner says how many are accepted and that the rest refuse, and the
+accepted line is marked."
+  (commit-gate-t--in-dir dir
+    (let ((gate (commit-gate-t--claim-gate
+                 dir (commit-gate-t--gate-text
+                      "Subject\n"
+                      (commit-gate-t--claim commit-gate-t--id-a
+                                            commit-gate-t--claim-a)
+                      (commit-gate-t--claim commit-gate-t--id-b
+                                            commit-gate-t--claim-b)))))
+      (commit-gate-t--visit gate
+        (commit-gate-show-banner)
+        (commit-gate-show-claims)
+        (should commit-gate-claims-mode)
+        (should (eq (key-binding (kbd "C-c C-a")) #'commit-gate-accept-claim))
+        (should (string-match-p "0 of 2 listed claims accepted"
+                                header-line-format))
+        (should (string-match-p "unaccepted refuses the landing"
+                                header-line-format))
+        (commit-gate-t--goto-claim commit-gate-t--claim-a)
+        (commit-gate-t--answering "yes" (commit-gate-accept-claim))
+        (should (string-match-p "1 of 2 listed claims accepted"
+                                header-line-format))
+        (should (seq-some (lambda (ov) (overlay-get ov 'commit-gate-claim))
+                          (overlays-at (point))))))))
+
+(ert-deftest commit-gate-hashes-the-bytes-a-latin-1-read-holds ()
+  "A raw byte in the diff makes Emacs read the gate as Latin-1. The id is
+still the verifier's, the SHA-256 of the claim's UTF-8 text."
+  (commit-gate-t--in-dir dir
+    (let ((gate (commit-gate-t--run-dir dir commit-gate-t--nonce-a))
+          (text "The naïve path was slower.")
+          (id "689dc2163752358a"))
+      (let ((coding-system-for-write 'no-conversion))
+        (write-region
+         (concat (encode-coding-string
+                  (commit-gate-t--gate-text
+                   "Subject\n" (commit-gate-t--claim id text))
+                  'utf-8-unix)
+                 "+a raw \xff\xfe byte\n")
+         nil gate nil 'quiet))
+      (commit-gate-t--visit gate
+        (let ((claim (car (commit-gate--claims))))
+          (should (equal (car claim) id))
+          (should (nth 2 claim)))
+        (goto-char (point-max))
+        (re-search-backward "^# claim-unsupported ")
+        (commit-gate-t--answering "yes" (commit-gate-accept-claim))
+        (should (equal commit-gate--accepted-claims (list id)))
+        (commit-gate-record-accept))
+      (should (equal (commit-gate-t--closed gate)
+                     (concat commit-gate-t--nonce-a "\naccept " id "\n"))))))
+
+(defun commit-gate-t--accept-then (change)
+  "Accept claim A, run CHANGE on its line, approve, and return the stamp."
+  (commit-gate-t--in-dir dir
+    (let ((gate (commit-gate-t--claim-gate
+                 dir (commit-gate-t--gate-text
+                      "Subject\n"
+                      (commit-gate-t--claim commit-gate-t--id-a
+                                            commit-gate-t--claim-a)))))
+      (commit-gate-t--visit gate
+        (commit-gate-t--goto-claim commit-gate-t--claim-a)
+        (commit-gate-t--answering "yes" (commit-gate-accept-claim))
+        (should (equal commit-gate--accepted-claims
+                       (list commit-gate-t--id-a)))
+        (beginning-of-line)
+        (funcall change)
+        (commit-gate-record-accept))
+      (commit-gate-t--closed gate))))
+
+(ert-deftest commit-gate-an-accepted-claim-edited-is-not-written ()
+  "The stamp names only a claim whose line still stands as accepted."
+  (should (equal (commit-gate-t--accept-then
+                  (lambda ()
+                    (search-forward "reasons")
+                    (replace-match "motives")))
+                 commit-gate-t--nonce-a)))
+
+(ert-deftest commit-gate-an-accepted-claim-cut-is-not-written ()
+  "A cut line is no longer a claim to accept."
+  (should (equal (commit-gate-t--accept-then
+                  (lambda ()
+                    (delete-region (line-beginning-position)
+                                   (line-beginning-position 2))))
+                 commit-gate-t--nonce-a)))
+
+(ert-deftest commit-gate-a-second-scissors-below-the-claims-drops-them ()
+  "Only the last scissors line counts, so claims above a new one are gone
+from the banner and the stamp."
+  (commit-gate-t--in-dir dir
+    (let ((gate (commit-gate-t--claim-gate
+                 dir (commit-gate-t--gate-text
+                      "Subject\n"
+                      (commit-gate-t--claim commit-gate-t--id-a
+                                            commit-gate-t--claim-a)))))
+      (commit-gate-t--visit gate
+        (commit-gate-show-banner)
+        (commit-gate-show-claims)
+        (commit-gate-t--goto-claim commit-gate-t--claim-a)
+        (commit-gate-t--answering "yes" (commit-gate-accept-claim))
+        (should (string-match-p "1 of 1 listed claims accepted"
+                                header-line-format))
+        (goto-char (point-max))
+        (insert commit-gate-scissors "\n")
+        (should-not (string-match-p "claims" header-line-format))
+        (should-not (commit-gate-t--accepted-marks))
+        (commit-gate-record-accept))
+      (should (equal (commit-gate-t--closed gate) commit-gate-t--nonce-a)))))
+
+(ert-deftest commit-gate-a-dos-coded-gate-writes-no-crlf ()
+  "verify-claims refuses any line but `accept ID', and a CR is part of one."
+  (commit-gate-t--in-dir dir
+    (let ((gate (commit-gate-t--claim-gate
+                 dir (commit-gate-t--gate-text
+                      "Subject\n"
+                      (commit-gate-t--claim commit-gate-t--id-a
+                                            commit-gate-t--claim-a)))))
+      (commit-gate-t--visit gate
+        (setq buffer-file-coding-system 'undecided-dos)
+        (commit-gate-t--goto-claim commit-gate-t--claim-a)
+        (commit-gate-t--answering "yes" (commit-gate-accept-claim))
+        (commit-gate-record-accept))
+      (should (equal (commit-gate-t--closed gate)
+                     (concat commit-gate-t--nonce-a "\naccept "
+                             commit-gate-t--id-a "\n"))))))
+
+(ert-deftest commit-gate-banner-and-marks-follow-an-edit ()
+  "Breaking or cutting a claim line updates the count and the mark without
+another C-c C-a."
+  (commit-gate-t--in-dir dir
+    (let ((gate (commit-gate-t--claim-gate
+                 dir (commit-gate-t--gate-text
+                      "Subject\n"
+                      (commit-gate-t--claim commit-gate-t--id-a
+                                            commit-gate-t--claim-a)
+                      (commit-gate-t--claim commit-gate-t--id-b
+                                            commit-gate-t--claim-b)))))
+      (commit-gate-t--visit gate
+        (commit-gate-show-banner)
+        (commit-gate-show-claims)
+        (should (memq #'commit-gate--refresh-claims after-change-functions))
+        (should-not (memq #'commit-gate--refresh-claims
+                          (default-value 'after-change-functions)))
+        (commit-gate-t--goto-claim commit-gate-t--claim-a)
+        (commit-gate-t--answering "yes" (commit-gate-accept-claim))
+        (should (string-match-p "1 of 2 listed claims accepted"
+                                header-line-format))
+        (search-forward "reasons")
+        (replace-match "motives")
+        (should (string-match-p "0 of 2 listed claims accepted"
+                                header-line-format))
+        (should-not (seq-some (lambda (ov) (overlay-get ov 'commit-gate-claim))
+                              (overlays-in (point-min) (point-max))))
+        (commit-gate-t--goto-claim commit-gate-t--claim-b)
+        (delete-region (line-beginning-position) (line-beginning-position 2))
+        (should (string-match-p "0 of 1 listed claims accepted"
+                                header-line-format))
+        ;; An editing command may read the match data after its own change.
+        (goto-char (point-min))
+        (should (re-search-forward "\\(Sub\\)ject" nil t))
+        (insert "!")
+        (should (equal (match-string 1) "Sub"))
+        (commit-gate-claims-mode -1)
+        (should-not (memq #'commit-gate--refresh-claims
+                          after-change-functions))))))
+
+(ert-deftest commit-gate-typing-in-the-message-skips-the-diff-scan ()
+  "Only an edit at or below the last scissors line reads the claims again,
+and cutting that line counts as one."
+  (commit-gate-t--in-dir dir
+    (let ((gate (commit-gate-t--claim-gate
+                 dir (commit-gate-t--gate-text
+                      "Subject\n"
+                      (commit-gate-t--claim commit-gate-t--id-a
+                                            commit-gate-t--claim-a))))
+          (scans 0))
+      (commit-gate-t--visit gate
+        (commit-gate-show-banner)
+        (commit-gate-show-claims)
+        (let ((parse (symbol-function 'commit-gate--claims)))
+          (cl-letf (((symbol-function 'commit-gate--claims)
+                     (lambda () (setq scans (1+ scans)) (funcall parse))))
+            (goto-char (point-min))
+            (insert "x")
+            (should (= scans 0))
+            (search-forward commit-gate-scissors)
+            (delete-region (line-beginning-position)
+                           (line-beginning-position 2))
+            (should (> scans 0))))
+        (should-not (string-match-p "claims" header-line-format))))))
+
+(ert-deftest commit-gate-a-failing-refresh-never-reaches-the-edit ()
+  "An error while redrawing must not stop his typing, nor drop the hook."
+  (commit-gate-t--in-dir dir
+    (let ((gate (commit-gate-t--claim-gate
+                 dir (commit-gate-t--gate-text
+                      "Subject\n"
+                      (commit-gate-t--claim commit-gate-t--id-a
+                                            commit-gate-t--claim-a)))))
+      (commit-gate-t--visit gate
+        (commit-gate-show-claims)
+        (cl-letf (((symbol-function 'commit-gate--claims)
+                   (lambda () (error "Parse failed"))))
+          (goto-char (point-min))
+          (insert "x"))
+        (should (memq #'commit-gate--refresh-claims after-change-functions))
+        (should (equal (buffer-substring (point-min) (1+ (point-min))) "x"))))))
+
+(ert-deftest commit-gate-accepting-after-a-refusal-keeps-the-reason ()
+  "The header line still says why C-x # was refused, beside the count."
+  (commit-gate-t--in-dir dir
+    (let ((gate (commit-gate-t--run-dir dir commit-gate-t--nonce-a "bad\n")))
+      (with-temp-file gate
+        (insert (commit-gate-t--gate-text
+                 "Subject\n"
+                 (commit-gate-t--claim commit-gate-t--id-a
+                                       commit-gate-t--claim-a))))
+      (commit-gate-t--visit gate
+        (commit-gate-show-banner)
+        (commit-gate-show-claims)
+        (should-error (commit-gate-record-accept) :type 'user-error)
+        (should (string-prefix-p "Not approved. .nonce is malformed"
+                                 header-line-format))
+        (should (string-match-p "0 of 1 listed claims accepted"
+                                header-line-format))
+        ;; As a repeated read could leave it, so the accept is allowed.
+        (setq commit-gate-nonce (cons 'nonce commit-gate-t--nonce-a))
+        (commit-gate-t--goto-claim commit-gate-t--claim-a)
+        (commit-gate-t--answering "yes" (commit-gate-accept-claim))
+        (should (string-prefix-p "Not approved. .nonce is malformed"
+                                 header-line-format))
+        (should (string-match-p "1 of 1 listed claims accepted"
+                                header-line-format))
+        (should (eq (get-text-property 0 'face header-line-format)
+                    'warning))))))
+
+(defmacro commit-gate-t--with-an-accepted-claim (&rest body)
+  "Run BODY in a gate with claim A accepted and marked."
+  (declare (indent 0))
+  `(commit-gate-t--in-dir dir
+     (let ((gate (commit-gate-t--claim-gate
+                  dir (commit-gate-t--gate-text
+                       "Subject\n"
+                       (commit-gate-t--claim commit-gate-t--id-a
+                                             commit-gate-t--claim-a)))))
+       (commit-gate-t--visit gate
+         (commit-gate-show-claims)
+         (commit-gate-t--goto-claim commit-gate-t--claim-a)
+         (commit-gate-t--answering "yes" (commit-gate-accept-claim))
+         (should (commit-gate-t--accepted-marks))
+         ,@body))))
+
+(ert-deftest commit-gate-a-major-mode-change-leaves-no-accepted-mark ()
+  "The change drops the accepts, so a mark left behind would lie."
+  (commit-gate-t--with-an-accepted-claim
+    (text-mode)
+    (should-not commit-gate--accepted-claims)
+    (should-not (commit-gate-t--accepted-marks))))
+
+(ert-deftest commit-gate-a-revert-leaves-no-accepted-mark ()
+  "A revert drops the accepts, so a mark left behind would lie."
+  (commit-gate-t--with-an-accepted-claim
+    (revert-buffer t t)
+    (should-not commit-gate--accepted-claims)
+    (should-not (commit-gate-t--accepted-marks))
+    ;; The revert reruns the major mode, which would leave C-c C-a unbound.
+    (should commit-gate-claims-mode)
+    (should (eq (key-binding (kbd "C-c C-a")) #'commit-gate-accept-claim))
+    (should (memq #'commit-gate--refresh-claims after-change-functions))
+    (should (string-match-p "0 of 1 listed claims accepted"
+                            header-line-format))))
+
+(ert-deftest commit-gate-turning-the-claims-mode-off-leaves-no-accepted-mark ()
+  "With the mode off nothing keeps the marks in step with the accepts."
+  (commit-gate-t--with-an-accepted-claim
+    (commit-gate-claims-mode -1)
+    (should-not (commit-gate-t--accepted-marks))))
+
+(ert-deftest commit-gate-banner-omits-claims-when-none-are-listed ()
+  "A gate with no claims keeps the plain banner."
+  (commit-gate-t--with-name "/tmp/x/.git/CLAUDE_COMMIT_MSG"
+    (insert (commit-gate-t--gate-text "Subject\n"))
+    (commit-gate-show-banner)
+    (should-not (string-match-p "claims" header-line-format))))
+
 ;;; A name that nearly matches
 
 (ert-deftest commit-gate-flags-a-near-miss ()
@@ -821,7 +1436,7 @@ twice and make the count meaningless. Measured rather than assumed."
 
 (ert-deftest commit-gate-arming-installs-both-header-lines ()
   "Once each, however often the configuration is reloaded, and the nonce
-read on both hooks that can open a gate."
+read on both hooks that can open a gate. The claim keys come on with them."
   (let ((server-visit-hook nil) (find-file-hook nil))
     (unwind-protect
         (progn
@@ -830,6 +1445,7 @@ read on both hooks that can open a gate."
           (should (equal (sort (copy-sequence server-visit-hook) #'string<)
                          '(commit-gate-capture-nonce
                            commit-gate-show-banner
+                           commit-gate-show-claims
                            commit-gate-warn-if-misnamed)))
           (should (equal find-file-hook '(commit-gate-capture-nonce))))
       (advice-remove 'server-done #'commit-gate-record-accept)
