@@ -2838,6 +2838,16 @@ Start `ielm' if it's not already running."
             (when (and buffer-file-name (string-match "llvm" buffer-file-name))
               (c-set-style "llvm.org")))))
 
+(defun dag/paredit-eval-expression ()
+  "Turn on paredit in `M-:', but leave RET to evaluate.
+Paredit binds RET to `paredit-RET', which inserts a newline there."
+  (paredit-mode 1)
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map paredit-mode-map)
+    (define-key map (kbd "RET") (lookup-key read-expression-map (kbd "RET")))
+    (setq-local minor-mode-overriding-map-alist
+                (cons (cons 'paredit-mode map) minor-mode-overriding-map-alist))))
+
 (use-package paredit
   :ensure t
   :config
@@ -2846,7 +2856,7 @@ Start `ielm' if it's not already running."
   (add-hook 'lisp-interaction-mode-hook #'paredit-mode)
   (add-hook 'ielm-mode-hook #'paredit-mode)
   (add-hook 'lisp-mode-hook #'paredit-mode)
-  (add-hook 'eval-expression-minibuffer-setup-hook #'paredit-mode))
+  (add-hook 'eval-expression-minibuffer-setup-hook #'dag/paredit-eval-expression))
 
 ;; (use-package flyspell
 ;;   :straight t
