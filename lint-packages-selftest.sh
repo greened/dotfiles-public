@@ -78,9 +78,10 @@ EOF
 check 1 'a stanza that declares nothing fails the lint' lint "$bad"
 # The report is captured before it is matched.  `lint' exits non-zero here by
 # design, and under `pipefail' that status, not the match, is what a pipe
-# straight into `grep' reports.
+# straight into `grep' reports. The match reads a here-string, since a
+# `grep -q' that stops at its first match can kill the writer of a pipe.
 report="$(lint "$bad" 2>&1)"
-if printf '%s\n' "$report" | grep -q 'bad\.el:1:.*no-such-library-xyzzy'; then
+if grep -q 'bad\.el:1:.*no-such-library-xyzzy' <<<"$report"; then
   pass=$((pass + 1)); printf 'ok   the report names the stanza and its line\n'
 else
   fail=$((fail + 1)); printf 'FAIL the report does not name the stanza\n'
@@ -99,7 +100,7 @@ cat >"$claim" <<'EOF'
 EOF
 check 1 'a false `:ensure nil` fails the lint' lint "$claim"
 report="$(lint "$claim" 2>&1)"
-if printf '%s\n' "$report" | grep -q "claim\.el:1:.*says .:ensure nil"; then
+if grep -q "claim\.el:1:.*says .:ensure nil" <<<"$report"; then
   pass=$((pass + 1)); printf 'ok   the report says which claim is false\n'
 else
   fail=$((fail + 1)); printf 'FAIL the report does not name the false claim\n%s\n' "$report"

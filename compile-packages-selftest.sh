@@ -75,7 +75,7 @@ out="$(emacs_run -Q --batch -L "$here/tools" -l compile-packages \
                                (string-join (cp-packages) " ")
                                (string-join (mapcar (function car) cp-excluded) " ")))' 2>&1)"
 printf '%s\n' "$out"
-if printf '%s\n' "$out" | grep -q 'excluded: themes'; then
+if grep -q 'excluded: themes' <<<"$out"; then
   pass=$((pass + 1)); printf 'ok   the checkout names its exclusion\n'
 else
   fail=$((fail + 1)); printf 'FAIL the exclusion is not reported\n'
