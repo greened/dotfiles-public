@@ -123,10 +123,8 @@ done
 bad=0
 while IFS= read -r l; do
   t="$(readlink "$l")"
-  case "$t" in
-    "$PUB"/*|"$OVERLAYS"/*|*/lib/dotfiles/*|*/lib/dotfiles-overlays/*|lib/dotfiles/*|lib/dotfiles-overlays/*)
-      if [ ! -e "$l" ]; then echo "!! STALE LINK (bug): $l -> $t" >&2; bad=$((bad + 1)); fi ;;
-  esac
+  case "$t" in "$PUB"/*|"$OVERLAYS"/*) ;; *) dot_managed_target "$t" || continue ;; esac
+  if [ ! -e "$l" ]; then echo "!! STALE LINK (bug): $l -> $t" >&2; bad=$((bad + 1)); fi
 done < <({ find "$HOME" -maxdepth 2 -type l
             sort -u "$DOTFILES_LINKED" | while IFS= read -r d; do
               find "$d/" -maxdepth 1 -type l

@@ -75,17 +75,22 @@ realsource() {  # dest repofile — write dest as a real file that sources repof
   printf '# managed: source the dotfiles base\n[ -r "%s" ] && . "%s"\n' "$repofile" "$repofile" > "$dest"
 }
 
-unlink_managed() {  # dest — retire an obsolete link, but ONLY if it is a symlink
-  # into the dotfiles tree (one a prior install made); never touch a real file.
-  local dest="$1" t
-  [ -L "$dest" ] || return 0
-  t="$(readlink "$dest")"
-  case "$t" in
-    */lib/dotfiles/*|*/lib/dotfiles-overlays/*|lib/dotfiles/*|lib/dotfiles-overlays/*) rm -f "$dest" ;;
+dot_managed_target() {  # target, true if a link to target is one an install made
+  case "$1" in
+    */lib/dotfiles/*|*/lib/dotfiles-overlays/*|lib/dotfiles/*|lib/dotfiles-overlays/*) return 0 ;;
     # The checkout before the overlays. Only the one in this $HOME, since a
     # dotfiles directory anywhere else is not one an install made.
-    "${HOME:?}"/dotfiles/*) rm -f "$dest" ;;
+    "${HOME:?}"/dotfiles/*) return 0 ;;
   esac
+  return 1
+}
+
+unlink_managed() {  # dest, retire an obsolete link, but ONLY if it is a symlink
+  # into the dotfiles tree (one a prior install made); never touch a real file.
+  local dest="$1"
+  [ -L "$dest" ] || return 0
+  dot_managed_target "$(readlink "$dest")" && rm -f "$dest"
+  return 0
 }
 
 gcoverlays_add() {  # gitconfig-fragment — append an include line to $GCOVERLAYS
