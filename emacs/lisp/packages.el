@@ -22,28 +22,6 @@
 ;;   (add-to-list 'load-path  (concat emacs-root "/site-lisp/use-package"))
 ;;   (require 'use-package))
 
-;; Gnus inbox / split configuration.  Defined here (before any overlay
-;; loads) so overlays can append entries and then rebuild the select
-;; method via `my-gnus-rebuild-select-method'.
-(defvar my-gnus-nnimap-inbox '("INBOX")
-  "List of IMAP inboxes to fetch.  Overlays add entries.")
-
-(defvar my-gnus-nnimap-split-fancy
-  '(|
-    (nil))
-  "Fancy split rules for incoming mail.  Overlays add entries.")
-
-(defun my-gnus-rebuild-select-method ()
-  "(Re)build `gnus-select-method' from the my-gnus-* variables."
-  (setq gnus-select-method
-        `(nnimap "Local"
-                 (nnimap-address "localhost")
-                 (nnimap-authenticator login)
-                 (nnimap-stream network)
-                 (nnimap-inbox ,my-gnus-nnimap-inbox)
-                 (nnimap-split-fancy ,my-gnus-nnimap-split-fancy)
-                 (nnimap-split-methods nnimap-split-fancy))))
-
 ;; Build native modules (e.g. vterm) with Homebrew GCC rather than Apple clang.
 ;; Set before Elpaca bootstraps so its builds inherit it, and use a full path
 ;; because the GUI daemon does not get Homebrew on PATH (and Homebrew's `gcc'
@@ -253,14 +231,24 @@ local checkout of the package found under `local-repos-directory'
 ;; (straight-use-package 'use-package)
 
 ;; Just for listing packages.  No package-initialize
-(require 'package)
-(setq package-archives '(("melpa" . "http://melpa.org/packages/")
-			 ("melpa-stable" . "http://stable.melpa.org/packages/")
-                         ("gnu" . "http://elpa.gnu.org/packages/")
-                         ;;("marmalade" . "http://marmalade-repo.org/packages/")
-			 ("org" . "http://orgmode.org/elpa/")))
+(use-package package
+  :ensure nil
+  :demand t
+  :config
+  (setq package-archives '(("melpa" . "http://melpa.org/packages/")
+                           ("melpa-stable" . "http://stable.melpa.org/packages/")
+                           ("gnu" . "http://elpa.gnu.org/packages/")
+                           ;;("marmalade" . "http://marmalade-repo.org/packages/")
+                           ("org" . "http://orgmode.org/elpa/")))
+  ;; Upgrade builtin packages.
+  (setq package-install-upgrade-built-in t))
 
-(setq warning-minimum-level :error)
+;; :defer t, so setting the level does not load warnings.el early.
+(use-package warnings
+  :ensure nil
+  :defer t
+  :init
+  (setq warning-minimum-level :error))
 
 ;; Remove builtin org - we use a downloaded package
 ;;(setq load-path (remove-if (lambda (x) (string-match-p "org$" x)) load-path))
@@ -273,9 +261,6 @@ local checkout of the package found under `local-repos-directory'
   (setq auto-package-update-delete-old-versions t)
   (setq auto-package-update-hide-results t)
   (auto-package-update-maybe))
-
-;; Upgrade builtin packages.
-(setq package-install-upgrade-built-in t)
 
 (use-package bind-key
   :ensure t
@@ -811,10 +796,21 @@ PRIORITY may be one of the characters ?A, ?B, or ?C."
   :ensure nil
   :load-path (lambda () (list (expand-file-name "lisp/agenda-feeds" emacs-root)))
   :demand t
+  :preface
+  (defun my/work-today ()
+    "Refresh the generated agenda feeds, then show the day view.
+Refreshing first is what makes the view trustworthy: the feeds are plain files,
+and a stale one looks exactly like an accurate one."
+    (interactive)
+    (when (fboundp 'agenda-feeds-refresh) (agenda-feeds-refresh))
+    (org-agenda nil "d"))
   :init
   ;; Deliberately NOT a notes directory.  A refresh rewrites each feed file
   ;; whole, so they must not share a directory with anything hand-written.
   (setq agenda-feeds-directory "~/lib/agenda-feeds")
+  ;; In :init, not :config, so the key exists even when agenda-feeds fails to
+  ;; load.
+  (define-key my/org-command-map (kbd "t") #'my/work-today)
   :config
   ;; `org-agenda-files' and `org-agenda-custom-commands' belong to org, which
   ;; loads lazily, so touch them only once it is up.
@@ -833,16 +829,6 @@ PRIORITY may be one of the characters ?A, ?B, or ?C."
                                ((org-agenda-overriding-header
                                  "Work in flight")))))
                  t)))
-
-(defun my/work-today ()
-  "Refresh the generated agenda feeds, then show the day view.
-Refreshing first is what makes the view trustworthy: the feeds are plain files,
-and a stale one looks exactly like an accurate one."
-  (interactive)
-  (when (fboundp 'agenda-feeds-refresh) (agenda-feeds-refresh))
-  (org-agenda nil "d"))
-
-(define-key my/org-command-map (kbd "t") #'my/work-today)
 
 (use-package exec-path-from-shell
   :ensure t
@@ -1674,6 +1660,28 @@ end tell
 
 (use-package gnus
   :ensure nil
+  :preface
+  ;; Gnus inbox / split configuration. Defined in :preface, which runs before
+  ;; any overlay loads, so overlays can append entries and then rebuild the
+  ;; select method via `my-gnus-rebuild-select-method'.
+  (defvar my-gnus-nnimap-inbox '("INBOX")
+    "List of IMAP inboxes to fetch.  Overlays add entries.")
+
+  (defvar my-gnus-nnimap-split-fancy
+    '(|
+      (nil))
+    "Fancy split rules for incoming mail.  Overlays add entries.")
+
+  (defun my-gnus-rebuild-select-method ()
+    "(Re)build `gnus-select-method' from the my-gnus-* variables."
+    (setq gnus-select-method
+          `(nnimap "Local"
+                   (nnimap-address "localhost")
+                   (nnimap-authenticator login)
+                   (nnimap-stream network)
+                   (nnimap-inbox ,my-gnus-nnimap-inbox)
+                   (nnimap-split-fancy ,my-gnus-nnimap-split-fancy)
+                   (nnimap-split-methods nnimap-split-fancy))))
   :config
   ;; Integrate gnus and bbdb
   (add-hook 'gnus-startup-hook 'bbdb-insinuate-gnus)
@@ -1708,7 +1716,7 @@ end tell
   ;; make my IMAP setting the default method for gnus.  The set of
   ;; inboxes and the split rules are employer/identity specific, so
   ;; overlays populate `my-gnus-nnimap-inbox' and
-  ;; `my-gnus-nnimap-split-fancy' (defined near the top of this file) and
+  ;; `my-gnus-nnimap-split-fancy' (defined in :preface above) and
   ;; then call `my-gnus-rebuild-select-method'.
   (my-gnus-rebuild-select-method)
 
@@ -2260,9 +2268,11 @@ Start `ielm' if it's not already running."
   ;;(add-hook 'ielm-mode-hook #'rainbow-delimiters-mode)
   )
 
-(require 'auth-source)
-
-(setq auth-sources '(password-store))
+(use-package auth-source
+  :ensure nil
+  :demand t
+  :config
+  (setq auth-sources '(password-store)))
 
 ;; Third-party packages
 
@@ -2838,18 +2848,18 @@ Start `ielm' if it's not already running."
             (when (and buffer-file-name (string-match "llvm" buffer-file-name))
               (c-set-style "llvm.org")))))
 
-(defun dag/paredit-eval-expression ()
-  "Turn on paredit in `M-:', but leave RET to evaluate.
-Paredit binds RET to `paredit-RET', which inserts a newline there."
-  (paredit-mode 1)
-  (let ((map (make-sparse-keymap)))
-    (set-keymap-parent map paredit-mode-map)
-    (define-key map (kbd "RET") (lookup-key read-expression-map (kbd "RET")))
-    (setq-local minor-mode-overriding-map-alist
-                (cons (cons 'paredit-mode map) minor-mode-overriding-map-alist))))
-
 (use-package paredit
   :ensure t
+  :preface
+  (defun dag/paredit-eval-expression ()
+    "Turn on paredit in `M-:', but leave RET to evaluate.
+Paredit binds RET to `paredit-RET', which inserts a newline there."
+    (paredit-mode 1)
+    (let ((map (make-sparse-keymap)))
+      (set-keymap-parent map paredit-mode-map)
+      (define-key map (kbd "RET") (lookup-key read-expression-map (kbd "RET")))
+      (setq-local minor-mode-overriding-map-alist
+                  (cons (cons 'paredit-mode map) minor-mode-overriding-map-alist))))
   :config
   (add-hook 'emacs-lisp-mode-hook #'paredit-mode)
   ;; enable in the *scratch* buffer
@@ -2885,6 +2895,33 @@ Paredit binds RET to `paredit-RET', which inserts a newline there."
   ;;     clangd if none is on PATH.
   ;; A local C/C++ file with no clangd/project just gets a harmless message.
   :hook ((c-mode c++-mode c-ts-mode c++-ts-mode) . lsp-deferred)
+  :preface
+  ;; Run one deferred lsp start at a time. `lsp-deferred' starts each buffer
+  ;; from an idle timer, and TRAMP's wait loop calls `sit-for' outside its
+  ;; connection lock. A second buffer's start can therefore run inside the
+  ;; first one's remote command. The inner call takes the outer call's reply,
+  ;; and the outer waits for it forever. Two buffers on one host, as in an
+  ;; ediff, hang Emacs this way until C-g.
+  (defvar my/lsp-init-running nil
+    "Non-nil while `lsp--init-if-visible' runs.")
+
+  (defun my/lsp-init-one-at-a-time (fn)
+    "Call FN, `lsp--init-if-visible', unless another call is in progress.
+A nested call retries from a fresh idle timer instead."
+    (if (not my/lsp-init-running)
+        (let ((my/lsp-init-running t))
+          (funcall fn))
+      (let ((buffer (current-buffer)))
+        (run-with-idle-timer
+         0.2 nil
+         (lambda ()
+           (when (buffer-live-p buffer)
+             (with-current-buffer buffer
+               (unless (lsp--init-if-visible)
+                 (add-hook 'window-configuration-change-hook
+                           #'lsp--init-if-visible nil t)))))))
+      ;; Keep `lsp-deferred' from installing its hook. The retry does that.
+      t))
   :init
   (setq lsp-keymap-prefix "C-c l")
   :custom
@@ -2903,6 +2940,37 @@ Paredit binds RET to `paredit-RET', which inserts a newline there."
   (lsp-idle-delay 0.5)
   (lsp-headerline-breadcrumb-enable nil)
   :config
+  (advice-add 'lsp--init-if-visible :around #'my/lsp-init-one-at-a-time)
+
+  ;; Never let the trunk client probe a TRAMP path.  It froze Emacs for 90
+  ;; seconds of CPU, repeatedly, and it can never succeed here.
+  ;;
+  ;; `lsp-auto-register-remote-clients' (default t) clones every client as
+  ;; `<id>-tramp' carrying the SAME :activation-fn, so a remote buffer matches
+  ;; the clone.  `lsp-trunk-check-for-init' then calls `locate-dominating-file'
+  ;; for .trunk/trunk.yaml, and on a remote name that is one `test -d' per
+  ;; directory level, over ssh, in series, up to the root.  It runs from
+  ;; `lsp--init-if-visible' on a timer, so it repeats with no action from me.
+  ;;
+  ;; Disabling the client does NOT stop this.  `lsp--supports-buffer?' is one
+  ;; `and' whose clauses run in order: the :activation-fn is clause 2, while
+  ;; `lsp-enabled-clients' and `lsp--client-disabled-p' are clauses 3 and 4.
+  ;; The probe has already run by the time the disable check is consulted.
+  ;;
+  ;; Refused for REMOTE names only, which keeps remote clangd working --
+  ;; `clangd-tramp' activates on a plain language test against ("c" "cpp"
+  ;; "objective-c" "cuda") and touches no files, so it costs nothing.  The
+  ;; blunt alternative, setting `lsp-auto-register-remote-clients' to nil,
+  ;; would have killed remote clangd along with the probe.
+  ;;
+  ;; `file-remote-p' is string parsing, not I/O, so the guard is free.  Local
+  ;; trunk is untouched, though trunk is not installed here and no repo has a
+  ;; .trunk/trunk.yaml, so this walk could never have found anything.
+  (with-eval-after-load 'lsp-trunk
+    (advice-add 'lsp-trunk-check-for-init :before-while
+                (lambda (filename &optional _)
+                  (not (file-remote-p filename)))))
+
   ;; No web clients are used here. The tailwindcss activation check runs for
   ;; every buffer and tests whether each lsp session folder exists. A folder
   ;; on a TRAMP connection that is not open makes it log in synchronously,
@@ -2915,65 +2983,6 @@ Paredit binds RET to `paredit-RET', which inserts a newline there."
                         '(lsp-angular lsp-astro lsp-copilot lsp-css lsp-emmet
                           lsp-eslint lsp-graphql lsp-semgrep lsp-svelte
                           lsp-tailwindcss lsp-vetur lsp-volar))))
-
-;; Never let the trunk client probe a TRAMP path.  It froze Emacs for 90
-;; seconds of CPU, repeatedly, and it can never succeed here.
-;;
-;; `lsp-auto-register-remote-clients' (default t) clones every client as
-;; `<id>-tramp' carrying the SAME :activation-fn, so a remote buffer matches
-;; the clone.  `lsp-trunk-check-for-init' then calls `locate-dominating-file'
-;; for .trunk/trunk.yaml, and on a remote name that is one `test -d' per
-;; directory level, over ssh, in series, up to the root.  It runs from
-;; `lsp--init-if-visible' on a timer, so it repeats with no action from me.
-;;
-;; Disabling the client does NOT stop this.  `lsp--supports-buffer?' is one
-;; `and' whose clauses run in order: the :activation-fn is clause 2, while
-;; `lsp-enabled-clients' and `lsp--client-disabled-p' are clauses 3 and 4.
-;; The probe has already run by the time the disable check is consulted.
-;;
-;; Refused for REMOTE names only, which keeps remote clangd working --
-;; `clangd-tramp' activates on a plain language test against ("c" "cpp"
-;; "objective-c" "cuda") and touches no files, so it costs nothing.  The
-;; blunt alternative, setting `lsp-auto-register-remote-clients' to nil,
-;; would have killed remote clangd along with the probe.
-;;
-;; `file-remote-p' is string parsing, not I/O, so the guard is free.  Local
-;; trunk is untouched, though trunk is not installed here and no repo has a
-;; .trunk/trunk.yaml, so this walk could never have found anything.
-(with-eval-after-load 'lsp-trunk
-  (advice-add 'lsp-trunk-check-for-init :before-while
-              (lambda (filename &optional _)
-                (not (file-remote-p filename)))))
-
-;; Run one deferred lsp start at a time. `lsp-deferred' starts each buffer
-;; from an idle timer, and TRAMP's wait loop calls `sit-for' outside its
-;; connection lock. A second buffer's start can therefore run inside the
-;; first one's remote command. The inner call takes the outer call's reply,
-;; and the outer waits for it forever. Two buffers on one host, as in an
-;; ediff, hang Emacs this way until C-g.
-(defvar my/lsp-init-running nil
-  "Non-nil while `lsp--init-if-visible' runs.")
-
-(defun my/lsp-init-one-at-a-time (fn)
-  "Call FN, `lsp--init-if-visible', unless another call is in progress.
-A nested call retries from a fresh idle timer instead."
-  (if (not my/lsp-init-running)
-      (let ((my/lsp-init-running t))
-        (funcall fn))
-    (let ((buffer (current-buffer)))
-      (run-with-idle-timer
-       0.2 nil
-       (lambda ()
-         (when (buffer-live-p buffer)
-           (with-current-buffer buffer
-             (unless (lsp--init-if-visible)
-               (add-hook 'window-configuration-change-hook
-                         #'lsp--init-if-visible nil t)))))))
-    ;; Keep `lsp-deferred' from installing its hook. The retry does that.
-    t))
-
-(with-eval-after-load 'lsp-mode
-  (advice-add 'lsp--init-if-visible :around #'my/lsp-init-one-at-a-time))
 
 (use-package lsp-ui
   :ensure t
@@ -3323,31 +3332,31 @@ A nested call retries from a fresh idle timer instead."
   :hook
   (embark-collect-mode . consult-preview-at-point-mode))
 
-(defvar my/mode-line-flash-timer nil
-  "The timer of the mode-line flash in progress, or nil.")
-
-(defun my/flash-mode-line (&optional times)
-  "Flash the mode line TIMES times, by default three, as a silent bell.
-Toggling `:inverse-video' leaves the theme's colors alone. One flash is
-easily missed."
-  (unless my/mode-line-flash-timer
-    (let* ((orig (face-attribute 'mode-line :inverse-video))
-           (flipped (not (eq orig t)))
-           (steps (* 2 (or times 3))))
-      (setq my/mode-line-flash-timer
-            (run-with-timer
-             0 0.15
-             (lambda ()
-               (setq steps (1- steps))
-               (set-face-attribute 'mode-line nil :inverse-video
-                                   (if (= (% steps 2) 1) flipped orig))
-               (when (zerop steps)
-                 (cancel-timer my/mode-line-flash-timer)
-                 (setq my/mode-line-flash-timer nil))))))))
-
 ;; A few more useful configurations...
 (use-package emacs
   :ensure nil
+  :preface
+  (defvar my/mode-line-flash-timer nil
+    "The timer of the mode-line flash in progress, or nil.")
+
+  (defun my/flash-mode-line (&optional times)
+    "Flash the mode line TIMES times, by default three, as a silent bell.
+Toggling `:inverse-video' leaves the theme's colors alone. One flash is
+easily missed."
+    (unless my/mode-line-flash-timer
+      (let* ((orig (face-attribute 'mode-line :inverse-video))
+             (flipped (not (eq orig t)))
+             (steps (* 2 (or times 3))))
+        (setq my/mode-line-flash-timer
+              (run-with-timer
+               0 0.15
+               (lambda ()
+                 (setq steps (1- steps))
+                 (set-face-attribute 'mode-line nil :inverse-video
+                                     (if (= (% steps 2) 1) flipped orig))
+                 (when (zerop steps)
+                   (cancel-timer my/mode-line-flash-timer)
+                   (setq my/mode-line-flash-timer nil))))))))
   :init
   ;; Add prompt indicator to `completing-read-multiple'.
   ;; We display [CRM<separator>], e.g., [CRM,] if the separator is a comma.
@@ -3789,13 +3798,12 @@ easily missed."
   (define-key magit-mode-map (kbd "C-c C-i") 'magit-gitignore)
   (define-key magit-mode-map "i" 'magit-imerge))
 
-;; Overlay-settable path to a project-specific gdb.  Overlays set this.
-(defvar my-gud-gdb-executable "gdb"
-  "Path to the gdb executable used by `gud'.  Overlays override this.")
-
 (use-package gud
   :ensure nil
-
+  :preface
+  ;; Overlay-settable path to a project-specific gdb.  Overlays set this.
+  (defvar my-gud-gdb-executable "gdb"
+    "Path to the gdb executable used by `gud'.  Overlays override this.")
   :config
   ;; Use the (overlay-settable) project gdb with the GDB/MI interface.  This was
   ;; previously a no-op: it set a typo'd `gud-gud-gdb-command-name' and never
@@ -4027,21 +4035,20 @@ easily missed."
 
 (use-package epg
   :ensure nil
-  :config)
-
-;; Prompt for GPG passphrases in the minibuffer via loopback when no external
-;; pinentry can reach us (GUI emacs, or auth-source-pass decrypting a `pass'
-;; entry).  Requires `allow-loopback-pinentry' in gpg-agent.conf.  External gpg
-;; (pass/auth-source) uses pinentry-mac via `pinentry-program' there; we no
-;; longer run the emacs-pinentry server, which could hang on a deleted buffer.
-;;
-;; A daemon is the one place loopback cannot work, because it asks `read-passwd'
-;; for the passphrase and a frameless daemon has no minibuffer to ask in.  The
-;; gpg child then waits on a `--command-fd' that never answers, and because the
-;; server filter is single-threaded that one eval wedges every later client.
-;; Leave the mode nil there so gpg falls back to `pinentry-program', which is
-;; pinentry-mac and can put the prompt on screen itself.
-(setq epg-pinentry-mode (if (daemonp) nil 'loopback))
+  :config
+  ;; Prompt for GPG passphrases in the minibuffer via loopback when no external
+  ;; pinentry can reach us (GUI emacs, or auth-source-pass decrypting a `pass'
+  ;; entry).  Requires `allow-loopback-pinentry' in gpg-agent.conf.  External gpg
+  ;; (pass/auth-source) uses pinentry-mac via `pinentry-program' there; we no
+  ;; longer run the emacs-pinentry server, which could hang on a deleted buffer.
+  ;;
+  ;; A daemon is the one place loopback cannot work, because it asks `read-passwd'
+  ;; for the passphrase and a frameless daemon has no minibuffer to ask in.  The
+  ;; gpg child then waits on a `--command-fd' that never answers, and because the
+  ;; server filter is single-threaded that one eval wedges every later client.
+  ;; Leave the mode nil there so gpg falls back to `pinentry-program', which is
+  ;; pinentry-mac and can put the prompt on screen itself.
+  (setq epg-pinentry-mode (if (daemonp) nil 'loopback)))
 
 ;; Notify on mail.
 ;; (use-package gnus-desktop-notify

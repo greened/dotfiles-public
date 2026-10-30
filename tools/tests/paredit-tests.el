@@ -30,16 +30,25 @@
   "A stand-in for paredit."
   :keymap paredit-mode-map)
 
+(defun paredit-tests--find-defun (form)
+  "Return the defun of `dag/paredit-eval-expression' within FORM, or nil.
+It need not be at top level, since a use-package block can hold it."
+  (cond ((and (eq (car-safe form) 'defun)
+              (eq (car-safe (cdr form)) 'dag/paredit-eval-expression))
+         form)
+        ((consp form)
+         (or (paredit-tests--find-defun (car form))
+             (paredit-tests--find-defun (cdr form))))))
+
 (defun paredit-tests--load ()
   "Evaluate `dag/paredit-eval-expression' from packages.el."
   (with-temp-buffer
     (insert-file-contents paredit-tests--packages)
     (condition-case nil
         (while t
-          (let ((form (read (current-buffer))))
-            (when (and (eq (car-safe form) 'defun)
-                       (eq (nth 1 form) 'dag/paredit-eval-expression))
-              (eval form t))))
+          (let ((found (paredit-tests--find-defun (read (current-buffer)))))
+            (when found
+              (eval found t))))
       (end-of-file nil)))
   (unless (fboundp 'dag/paredit-eval-expression)
     (error "No dag/paredit-eval-expression in %s" paredit-tests--packages)))
