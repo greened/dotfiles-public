@@ -37,6 +37,9 @@ do_test() {
   echo "== test: link guard"
   "$here/link-selftest.sh"
   echo
+  echo "== test: ssh/rc keeps an agent link and passes X11 cookies to xauth"
+  "$here/ssh-rc-selftest.sh"
+  echo
   echo "== test: which shells get vterm's prompt escape"
   "$here/prompt-selftest.sh"
   echo

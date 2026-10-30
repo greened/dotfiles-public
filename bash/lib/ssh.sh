@@ -10,7 +10,20 @@ function start_agent {
    /usr/bin/ssh-add;
 }
 
+# Use the agent link that ~/.ssh/rc keeps pointed at a live forwarded
+# agent. ssh/rc in the dotfiles explains why. Only inside an ssh session, so
+# a local agent (the Mac's launchd one) is left alone. The owner test stops a
+# dangling link from reaching a socket another user made at the old path.
+function use_agent_link {
+    local link="${HOME}/.ssh/agent-${HOSTNAME%%.*}.sock"
+    if [[ -n "${SSH_CONNECTION}" && -S "${link}" && -O "${link}" ]]; then
+        export SSH_AUTH_SOCK="${link}"
+    fi
+}
+
 function setup_ssh {
+    use_agent_link
+
     if [[ -z "${LOGIN_SHELL}" ]]; then
         return
     fi

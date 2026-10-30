@@ -1,0 +1,50 @@
+# -*-sh-*-
+# ~/.ssh/rc: sshd runs this with /bin/sh for each session, before the shell
+# or command.
+#
+# A stable path to the forwarded agent.
+#
+# A forwarded agent's socket lives in /tmp and is removed when the session
+# that forwarded it ends. A process that outlives that session, such as a
+# shell in tmux or a long-running agent session, keeps the dead path in
+# SSH_AUTH_SOCK and loses the agent's keys.
+#
+# So a session points a link, ~/.ssh/agent-HOST.sock, at its own socket,
+# and bash's setup_ssh (bash/lib/ssh.sh) exports the link as SSH_AUTH_SOCK.
+# A shell that outlives its session then follows whichever agent the link
+# names. The link moves only when its agent stops answering, so a short
+# session (ssh host cmd, a TRAMP connection) does not take the link from a
+# login that is still up. It is
+# named per host because home is shared with other machines, whose /tmp
+# sockets do not exist here.
+#
+# X11. When this file exists, sshd no longer runs xauth itself, so X11
+# forwarding would lose its cookie. The second half does that step, as
+# sshd(8) describes under SSHRC.
+
+link="$HOME/.ssh/agent-$(hostname -s).sock"
+if [ -S "$SSH_AUTH_SOCK" ] && [ -O "$SSH_AUTH_SOCK" ]; then
+  # ssh-add exits 0 or 1 when an agent answers. The watchdog bounds a wedged
+  # one, such as a slept laptop's, since sshd waits for this file before the
+  # session starts. Its output goes nowhere, so a leftover sleep cannot hold
+  # the session open.
+  SSH_AUTH_SOCK="$link" ssh-add -l </dev/null >/dev/null 2>&1 &
+  probe=$!
+  (sleep 2; kill "$probe") </dev/null >/dev/null 2>&1 &
+  watchdog=$!
+  wait "$probe"
+  answered=$?
+  kill "$watchdog" 2>/dev/null
+  case "$answered" in
+    0|1) ;;
+    *) ln -sfn "$SSH_AUTH_SOCK" "$link" ;;
+  esac
+fi
+
+# sshd writes the X11 protocol and cookie on stdin only when it forwards X11.
+if read -r proto cookie && [ -n "$DISPLAY" ]; then
+  case "$DISPLAY" in
+    localhost:*) echo add "unix:${DISPLAY#localhost:}" "$proto" "$cookie" ;;
+    *)           echo add "$DISPLAY" "$proto" "$cookie" ;;
+  esac | xauth -q -
+fi
