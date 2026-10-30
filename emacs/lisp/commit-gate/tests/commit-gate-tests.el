@@ -1217,6 +1217,15 @@ and cutting that line counts as one."
     (should (string-match-p "0 of 1 listed claims accepted"
                             header-line-format))))
 
+(ert-deftest commit-gate-a-revert-that-keeps-the-modes-drops-the-accepts ()
+  "Auto-revert keeps the modes, so the accepts must not outlive it."
+  (commit-gate-t--with-an-accepted-claim
+    (revert-buffer t t t)
+    (should-not commit-gate--accepted-claims)
+    (should-not (commit-gate-t--accepted-marks))
+    (should (string-match-p "0 of 1 listed claims accepted"
+                            header-line-format))))
+
 (ert-deftest commit-gate-turning-the-claims-mode-off-leaves-no-accepted-mark ()
   "With the mode off nothing keeps the marks in step with the accepts."
   (commit-gate-t--with-an-accepted-claim

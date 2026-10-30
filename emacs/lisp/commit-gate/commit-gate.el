@@ -407,9 +407,12 @@ Written for `after-change-functions', so no error may reach his editing."
     (commit-gate--clear-marks)))
 
 (defun commit-gate--restore-after-revert ()
-  "Turn the claims mode and the banner back on after a revert.
-The major mode a revert sets drops both. The accepts stay dropped."
+  "Drop the accepts and turn the claims mode and the banner back on.
+The major mode a full revert sets drops all three. A revert that keeps
+the modes, as auto-revert does, would keep the accepts, so they are
+dropped here too."
   (when (commit-gate-buffer-p)
+    (setq commit-gate--accepted-claims nil)
     (commit-gate-show-claims)
     (commit-gate-show-banner)))
 ;; Kept through the major mode change, because that change is what it repairs.
