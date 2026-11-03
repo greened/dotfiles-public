@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Check the symlinked-parent guard and unlink_managed in link-lib.sh:
+# Check the symlinked-parent guard and unlink_managed in link-lib.sh, and
+# dot_overlay_checkout in bash/lib/overlays.sh:
 #
 #     ./link-selftest.sh
 #
@@ -20,6 +21,7 @@ set -uo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$here/link-lib.sh"
+. "$here/bash/lib/overlays.sh"
 
 pass=0 fail=0
 check() {  # want-rc name -- runs _dot_parent_ok "$dest" with $HOME already set
@@ -100,6 +102,26 @@ ln -s "$uhome/dotfiles" "$uhome/.whole-link"
 check_unlink kept 'unlink: the old checkout itself' "$uhome/.whole-link"
 : > "$uhome/.real-file"
 check_unlink kept 'unlink: a real file' "$uhome/.real-file"
+
+# dot_overlay_checkout: where each overlay layout keeps its files.
+ov="$tmp/overlays"
+mkdir -p "$ov/flat/.git" "$ov/flat-with-main/.git" "$ov/flat-with-main/main" \
+         "$ov/umb/.umb.git" "$ov/umb/main" "$ov/umb/topic"
+: > "$ov/umb/main/.git"; : > "$ov/umb/topic/.git"
+check_checkout() {  # name dir want
+  local got
+  got="$(dot_overlay_checkout "$2")"
+  if [ "$got" = "$3" ]; then
+    pass=$((pass + 1)); printf 'ok   %s\n' "$1"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s (%s, want %s)\n' "$1" "$got" "$3"
+  fi
+}
+check_checkout 'checkout: a plain clone is itself' "$ov/flat" "$ov/flat"
+check_checkout 'checkout: an umbrella is its main worktree' "$ov/umb" "$ov/umb/main"
+check_checkout 'checkout: a plain directory named main is no worktree' \
+               "$ov/flat-with-main" "$ov/flat-with-main"
+check_checkout 'checkout: an absent overlay is itself' "$ov/absent" "$ov/absent"
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -1,7 +1,9 @@
 # Public base.  Employer/personal hosts + identities come from overlays cloned
 # into ~/lib/dotfiles-overlays/, pulled in by this glob.  Include first so
-# overlay Host entries take priority.
-Include ~/lib/dotfiles-overlays/*/ssh/config
+# overlay Host entries take priority. The second glob is a git-project
+# umbrella's main worktree. A plain clone has no main/ and an umbrella has no
+# ssh/ of its own, so each overlay matches once.
+Include ~/lib/dotfiles-overlays/*/ssh/config ~/lib/dotfiles-overlays/*/main/ssh/config
 
 Host *
   TCPKeepAlive yes

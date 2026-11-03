@@ -23,6 +23,7 @@ DOTFILES_LINKED="$(mktemp)"
 export DOTFILES_LINKED
 trap 'rm -f "$DOTFILES_LINKED"' EXIT
 . "$DOTFILES_LINK_LIB"
+. "$PUB/bash/lib/overlays.sh"
 
 # --- base files (generic; usable on their own) ---
 realsource "$HOME/.bashrc"       "$PUB/bash/bashrc"
@@ -116,7 +117,7 @@ else
 fi
 for name in "${overlay_order[@]:-}"; do
   [ -n "$name" ] || continue
-  ov="$OVERLAYS/$name"
+  ov="$(dot_overlay_checkout "$OVERLAYS/$name")"
   if [ -r "$ov/link.sh" ]; then echo ">> linking overlay $name"; bash "$ov/link.sh"; fi
 done
 

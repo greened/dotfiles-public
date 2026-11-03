@@ -1192,6 +1192,18 @@ class Config(unittest.TestCase):
     self.assertEqual([p.split(os.sep)[-3] for p in rs.config_paths(d)],
                      ['b', 'a'])
 
+  def test_config_paths_use_an_umbrellas_main(self):
+    d = tempfile.mkdtemp()
+    self.addCleanup(shutil.rmtree, d, True)
+    # A plain clone, and an umbrella whose other worktree must not count.
+    for sub in ('flat', 'umb/main', 'umb/topic'):
+      os.makedirs(os.path.join(d, sub, 'repo-sync'))
+      open(os.path.join(d, sub, '.git'), 'w').close()
+      open(os.path.join(d, sub, 'repo-sync', 'repos.list'), 'w').close()
+    self.assertEqual(rs.config_paths(d),
+                     [os.path.join(d, 'flat', 'repo-sync', 'repos.list'),
+                      os.path.join(d, 'umb', 'main', 'repo-sync', 'repos.list')])
+
 
 # What the real socket appends to a long emacsclient -e reply.
 GARBLE = '\n*ERROR*: Unknown message: "&n'

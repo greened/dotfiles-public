@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Check where :try-local in emacs/lisp/packages.el finds a local checkout:
+# Check where :try-local in emacs/lisp/packages.el finds a local checkout, and
+# where emacs/emacsrc finds each overlay:
 #
 #     ./try-local-selftest.sh
 #

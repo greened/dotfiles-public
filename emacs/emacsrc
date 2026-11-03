@@ -85,10 +85,26 @@
  ;; If there is more than one, they won't work right.
  )
 
+(defun dotfiles-overlay-checkouts (root)
+  "Return the checkout of each overlay under ROOT, in name order.
+For a git-project umbrella that is its main worktree. Other worktrees
+are never returned."
+  (when (file-directory-p root)
+    (delq nil
+          (mapcar (lambda (dir)
+                    (when (file-directory-p dir)
+                      (let ((main (expand-file-name "main" dir)))
+                        (if (file-exists-p (expand-file-name ".git" main))
+                            main
+                          dir))))
+                  (directory-files root t "\\`[^.]")))))
+
 ;; Overlays, loaded after the base config.  Wrap each load so one erroring
 ;; overlay (e.g. a token-consuming block failing when its secret can't be
 ;; read) is skipped with a warning instead of aborting the whole batch.
-(dolist (f (file-expand-wildcards (expand-file-name "~/lib/dotfiles-overlays/*/emacs/*.el")))
+(dolist (f (mapcan (lambda (dir)
+                     (file-expand-wildcards (expand-file-name "emacs/*.el" dir)))
+                   (dotfiles-overlay-checkouts "~/lib/dotfiles-overlays")))
   (condition-case err
       (load f t)
     (error (display-warning 'dotfiles-overlays

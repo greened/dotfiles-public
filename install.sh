@@ -48,6 +48,7 @@ get() {
 
 mkdir -p "$LIB" "$OVERLAYS"
 get "$PUBLIC_URL" "$PUB" required
+. "$PUB/bash/lib/overlays.sh"
 
 # --- overlays from the private manifest --------------------------------------
 if [ ! -r "$MANIFEST" ]; then
@@ -110,8 +111,9 @@ else
     : > "$OVERLAYS/.order"
     for e in "${entries[@]}"; do
       name="${e%%|*}"; url="${e#*|}"
-      get "$url" "$OVERLAYS/$name"
-      [ -d "$OVERLAYS/$name/.git" ] && printf '%s\n' "$name" >> "$OVERLAYS/.order"
+      ov="$(dot_overlay_checkout "$OVERLAYS/$name")"
+      get "$url" "$ov"
+      [ -e "$ov/.git" ] && printf '%s\n' "$name" >> "$OVERLAYS/.order"
     done
   fi
 fi

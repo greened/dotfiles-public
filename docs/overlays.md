@@ -48,9 +48,18 @@ The base names no overlay. Each tool finds overlays by a glob, or through
 `.order` governs only the rows that say so. The globbed tools expand the
 glob themselves, so their order is the glob's order by overlay name, and
 `.order` does not change it. bash sorts a glob by the locale's collation.
-`file-expand-wildcards` sorts in `string<` order. The two can differ for
+Emacs sorts in `string<` order. The two can differ for
 names that differ in case or punctuation. `link.sh` and `repo-sync` fall
 back to the sorted directory list when `.order` is missing.
+
+An overlay is a plain clone or a git-project umbrella. An umbrella holds the
+bare store, a `main/` worktree and any other worktrees. The default worktree
+must be named `main/`, since one named after a `master` branch is not read.
+Each tool reads an umbrella's `main/` and ignores its other worktrees. ssh
+and tmux cannot test
+for an umbrella, so they glob `*/main/` as a second pattern. While some
+overlays are converted and some are not, that loads the umbrellas after the
+plain clones.
 
 The Claude Code config does not read overlays. It has its own manifest and
 its own repos under `~/.claude` (see the README).

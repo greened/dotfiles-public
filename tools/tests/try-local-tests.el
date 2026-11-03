@@ -6,7 +6,8 @@
 
 ;; packages.el does not load in batch, so these tests read the try-local
 ;; and bootstrap defuns and their defvar out of it and evaluate only those. Run by
-;; ../../try-local-selftest.sh.
+;; ../../try-local-selftest.sh. The overlay checkout tests read their defun out
+;; of emacsrc the same way.
 
 ;;; Code:
 
@@ -20,6 +21,7 @@
 (declare-function elpaca-recipe-try-local--checkout nil (candidate name))
 (declare-function elpaca-bootstrap--warn-old-layout nil (dir))
 (declare-function elpaca-bootstrap--warn-stale-pin nil (source ref))
+(declare-function dotfiles-overlay-checkouts nil (root))
 
 (defconst try-local-tests--packages
   (expand-file-name "../../emacs/lisp/packages.el"
@@ -48,6 +50,28 @@
     names))
 
 (defconst try-local-tests--names (try-local-tests--load))
+
+(defconst try-local-tests--emacsrc
+  (expand-file-name "../../emacs/emacsrc"
+                    (file-name-directory
+                     (or load-file-name buffer-file-name))))
+
+(defun try-local-tests--load-overlay-checkouts ()
+  "Evaluate `dotfiles-overlay-checkouts' from emacsrc, and return its name."
+  (let (found)
+    (with-temp-buffer
+      (insert-file-contents try-local-tests--emacsrc)
+      (condition-case nil
+          (while t
+            (let ((form (read (current-buffer))))
+              (when (and (eq (car-safe form) 'defun)
+                         (eq (nth 1 form) 'dotfiles-overlay-checkouts))
+                (eval form t)
+                (setq found (nth 1 form)))))
+        (end-of-file nil)))
+    found))
+
+(defconst try-local-tests--overlay-name (try-local-tests--load-overlay-checkouts))
 
 ;; The real one is in elpaca, which is not loaded here.
 (defun elpaca-git--repo-name (repo)
@@ -209,5 +233,35 @@ They are built with plumbing, so no commit hook runs on the fixture."
     (should-not (try-local-tests--warned
                  (elpaca-bootstrap--warn-stale-pin
                   (expand-file-name "absent/" root) "HEAD")))))
+
+;; The overlay loader in emacsrc, for both overlay layouts.
+(ert-deftest try-local-tests-found-the-overlay-form ()
+  (should (eq try-local-tests--overlay-name 'dotfiles-overlay-checkouts)))
+
+(ert-deftest try-local-tests-overlay-flat-clone ()
+  (try-local-tests--with-tree '("ov/flat/.git")
+    (should (equal (dotfiles-overlay-checkouts (expand-file-name "ov" root))
+                   (list (expand-file-name "ov/flat" root))))))
+
+(ert-deftest try-local-tests-overlay-umbrella ()
+  ;; Only main loads, never the umbrella's other worktrees.
+  (try-local-tests--with-tree '("ov/umb/.umb.git" "ov/umb/main" "ov/umb/topic")
+    (dolist (wt '("main" "topic"))
+      (write-region "" nil (expand-file-name (concat "ov/umb/" wt "/.git") root)))
+    (should (equal (dotfiles-overlay-checkouts (expand-file-name "ov" root))
+                   (list (expand-file-name "ov/umb/main" root))))))
+
+(ert-deftest try-local-tests-overlay-mixed-in-name-order ()
+  ;; Mid-conversion, one of each, and the .order file is no overlay.
+  (try-local-tests--with-tree '("ov/a/main" "ov/b/.git")
+    (write-region "" nil (expand-file-name "ov/a/main/.git" root))
+    (write-region "" nil (expand-file-name "ov/.order" root))
+    (should (equal (dotfiles-overlay-checkouts (expand-file-name "ov" root))
+                   (list (expand-file-name "ov/a/main" root)
+                         (expand-file-name "ov/b" root))))))
+
+(ert-deftest try-local-tests-overlay-no-root ()
+  (try-local-tests--with-tree '()
+    (should-not (dotfiles-overlay-checkouts (expand-file-name "absent" root)))))
 
 ;;; try-local-tests.el ends here

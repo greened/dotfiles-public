@@ -236,7 +236,8 @@ reports any symlink still dangling into the dotfiles tree — that means an over
 
 An overlay is just a repo with the same tool subdirectories (`bash/`, `emacs/`,
 `ssh/`, `tmux/`, `git/`).  Clone it into `~/lib/dotfiles-overlays/<name>/` and it
-is live on the next shell.  Two things to know:
+is live on the next shell. A git-project umbrella there works too. The base
+reads its `main/` worktree and ignores the others. Two things to know:
 
 - **Globbed tools** (bash/emacs/ssh/tmux) need nothing extra — just drop a file
   in the matching subdirectory.

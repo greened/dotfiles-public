@@ -91,7 +91,11 @@ fi
 # Each repo cloned into ~/lib/dotfiles-overlays/ contributes bash/*.sh here.
 # They define and self-activate their own environment; the set of cloned
 # overlays is the machine's config, with no per-machine editing.  No-op if none.
-for f in "$HOME"/lib/dotfiles-overlays/*/bash/*.sh; do [ -r "$f" ] && . "$f"; done
+. ${LIB}/overlays.sh
+for d in "$HOME"/lib/dotfiles-overlays/*/; do
+    for f in "$(dot_overlay_checkout "${d%/}")"/bash/*.sh; do [ -r "$f" ] && . "$f"; done
+done
+unset d f
 
 # set variable identifying the chroot you work in (used in the prompt below)
 if [ -z "$debian_chroot" ] && [ -r /etc/debian_chroot ]; then

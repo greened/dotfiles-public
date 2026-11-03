@@ -34,7 +34,7 @@ do_build() {
 do_test() {
   # Each selftest is its own script and stays runnable on its own; this only
   # decides the order and fails the run on the first one that fails.
-  echo "== test: link guard"
+  echo "== test: link guard and overlay checkouts"
   "$here/link-selftest.sh"
   echo
   echo "== test: ssh/rc keeps an agent link and passes X11 cookies to xauth"
@@ -49,7 +49,7 @@ do_test() {
   echo "== test: packages.el declares :ensure everywhere"
   EMACS="$emacs" "$here/lint-packages-selftest.sh"
   echo
-  echo "== test: :try-local finds flat clones and umbrellas"
+  echo "== test: :try-local and the overlay loader find flat clones and umbrellas"
   EMACS="$emacs" "$here/try-local-selftest.sh"
   echo
   echo "== test: RET evaluates in M-: with paredit on"
@@ -86,11 +86,14 @@ do_test() {
   # them too. $DOTFILES_OVERLAYS overrides the directory, and $DOTFILES_LIB
   # moves it as it does for install.sh.
   local lib="${DOTFILES_LIB:-$HOME/lib}"
-  local overlays="${DOTFILES_OVERLAYS:-$lib/dotfiles-overlays}" check
-  for check in "$overlays"/*/check.sh; do
+  local overlays="${DOTFILES_OVERLAYS:-$lib/dotfiles-overlays}" ov check
+  . "$here/bash/lib/overlays.sh"
+  for ov in "$overlays"/*/; do
+    ov="${ov%/}"
+    check="$(dot_overlay_checkout "$ov")/check.sh"
     [ -x "$check" ] || continue
     echo
-    echo "== test: overlay $(basename "$(dirname "$check")")"
+    echo "== test: overlay $(basename "$ov")"
     "$check" test
   done
 }
