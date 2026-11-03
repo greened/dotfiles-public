@@ -862,7 +862,6 @@ and a stale one looks exactly like an accurate one."
 ;  (tramp #'autoload-register-crypt-file-name-handler "tramp-crypt")
   :config
   (setq tramp-verbose 1)
-  (setq tramp-default-method "ssh")
   ;; Tolerates ANSI escapes trailing the prompt. bash/lib/emacs.sh keeps
   ;; `vterm_prompt_end' out of TRAMP's TERM=dumb login shell, so this is not
   ;; load-bearing for that host. It stays because other hosts may still
@@ -927,13 +926,8 @@ and a stale one looks exactly like an accurate one."
   ;;(setq session-file-alist ())
   ;;(setq file-name-history ())
 
-  (if (eq window-system 'w32)
-                                        ;(setq tramp-default-method "ssh")
-    (setq tramp-default-method "scp")
-                                        ;(setq tramp-default-method "scpx")
-  (setq tramp-default-method "ssh"))
+  (setq tramp-default-method (if (eq window-system 'w32) "scp" "ssh"))
 
-  ;;(setq tramp-default-method "ssh")
   ;;(tramp-change-syntax 'simplified)
   ;setq(setq tramp-verbose 10)
   ;(setq tramp-debug-buffer t)
@@ -950,26 +944,9 @@ and a stale one looks exactly like an accurate one."
 ;;(autoload #'tramp-register-crypt-file-name-handler "tramp-crypt")
 ;;(require 'tramp)
 
-(setq tramp-default-method "ssh")
-;; See the commentary on the same setting in the `tramp' use-package block
-;; above: this tolerates ANSI escapes after the prompt.
+;; The block's `:config' sets this too, but it never runs if the tramp recipe
+;; fails to build, and the default pattern can spin as described there.
 (setq tramp-shell-prompt-pattern "\\(?:^\\|\r\\)[^]#$%>\n]*#?[]#$%>].* *\\(^[\\[[0-9;]*[a-zA-Z] *\\)*")
-
-(setq vc-ignore-dir-regexp
-      (format "\\(%s\\)\\|\\(%s\\)"
-	      vc-ignore-dir-regexp
-	      tramp-file-name-regexp))
-
-;; Honor remote PATH.
-;;(add-to-list 'tramp-remote-path 'tramp-own-remote-path)
-
-;; ControlMaster is configured in the use-package tramp block above.
-
-(if (eq window-system 'w32)
-                                        ;(setq tramp-default-method "ssh")
-    (setq tramp-default-method "scp")
-                                        ;(setq tramp-default-method "scpx")
-  (setq tramp-default-method "ssh"))
 
 (use-package compile
   :ensure nil
