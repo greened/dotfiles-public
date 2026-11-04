@@ -4447,7 +4447,10 @@ Confluence account id.  Idempotent -- safe to re-run after an overlay sets
   ;; Load eagerly: like prevue, the MCP server calls gaffer entrypoints
   ;; directly, so :bind-keymap alone would leave them void on a cold Emacs.
   :demand t
-  :bind-keymap ("C-c g" . gaffer-command-map))
+  :bind-keymap ("C-c g" . gaffer-command-map)
+  ;; Reconnect a dropped TRAMP host after a no-prompt ssh check, instead of
+  ;; refusing every MCP call until a file on the host is opened by hand.
+  :custom ((gaffer-connect-refused-hosts t)))
 
 (use-package gazette
   ;; Weekly status report: assemble from Jira + GitHub, edit as org, render to
