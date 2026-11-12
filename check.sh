@@ -37,6 +37,9 @@ do_test() {
   echo "== test: link guard and overlay checkouts"
   "$here/link-selftest.sh"
   echo
+  echo "== test: install.sh clones a missing overlay as a git dev umbrella"
+  "$here/install-selftest.sh"
+  echo
   echo "== test: ssh/rc keeps an agent link and passes X11 cookies to xauth"
   "$here/ssh-rc-selftest.sh"
   echo

@@ -18,7 +18,8 @@
 #     && ~/lib/dotfiles/install.sh
 # or, once the repo is public:
 #   curl -fsSL https://raw.githubusercontent.com/greened/dotfiles-public/main/install.sh | bash
-# Prerequisites: git, and a GitHub SSH key (required for private overlays).
+# Prerequisites: git, git dev (git-project) to clone an overlay, and a GitHub
+# SSH key (required for private overlays).
 set -euo pipefail
 
 PUBLIC_URL="git@github.com:greened/dotfiles-public.git"
@@ -44,6 +45,58 @@ get() {
     echo "   warn: could not fetch $(basename "$dir") — skipping" >&2
   fi
   return 0
+}
+
+# get_overlay URL DIR: like get, but a missing overlay is cloned as a
+# git-project umbrella, DIR/.<repo>.git with the checkout in DIR/main.
+get_overlay() {
+  local url="$1" dir="$2" name co parent rc=0
+  name="$(basename "$dir")"
+  [ -n "$url" ] || { echo "   skip $name (no URL)"; return 0; }
+  co="$(dot_overlay_checkout "$dir")"
+  if [ "$co" = "$dir" ] && [ -e "$dir/.git" ] \
+       && [ "$(git -C "$dir" rev-parse --is-bare-repository 2>/dev/null)" = true ]; then
+    rename_hint "$name" "$dir"; return 0
+  fi
+  if [ -e "$co/.git" ]; then get "$url" "$co"; return 0; fi
+  # -L too: a dangling symlink fails -e, and a failed clone would remove it.
+  if [ -e "$dir" ] || [ -L "$dir" ]; then
+    echo "   warn: $dir exists but holds no checkout, so $name is skipped." >&2
+    echo "         Move it aside and re-run install.sh." >&2
+    return 0
+  fi
+  # git dev writes project defaults into the repo it is run from.
+  parent="$(dirname "$dir")"
+  if git -C "$parent" rev-parse --git-dir >/dev/null 2>&1; then
+    echo "   warn: $parent is inside a git repo, so $name is not cloned." >&2
+    echo "         Set DOTFILES_LIB to a directory outside any repo." >&2
+    return 0
+  fi
+  # No stdin: git dev prompts when it cannot pick a main branch, and under
+  # curl | bash it would read the rest of this script.
+  (cd "$parent" && git dev clone --worktree "$url" "$name" </dev/null) || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    rm -rf "$dir"
+    echo "   warn: could not fetch $name, skipping." >&2
+    echo "         Its remote must be reachable and have a main, a master or a sole branch." >&2
+  elif [ ! -e "$dir/main/.git" ]; then
+    rename_hint "$name" "$dir" fresh
+  fi
+  return 0
+}
+
+# rename_hint NAME DIR [fresh]: DIR is an umbrella whose worktree is not
+# main. Only a fresh clone is known to hold a single worktree to name.
+rename_hint() {
+  local name="$1" dir="$2" fresh="${3:-}" wt=""
+  # The bare store is listed first, then the worktree clone made.
+  [ "$fresh" = fresh ] && { wt="$(git -C "$dir" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | sed -n 2p)" || true; }
+  echo "   warn: $name has no main branch, so nothing reads its checkout." >&2
+  if [ -n "$wt" ]; then
+    printf '         Rename its worktree: git -C %q worktree move %q main\n' "$dir" "$wt" >&2
+  else
+    echo "         Rename its worktree to $dir/main with git worktree move." >&2
+  fi
 }
 
 mkdir -p "$LIB" "$OVERLAYS"
@@ -107,13 +160,28 @@ else
       echo "   (non-interactive: using suggested order)"
     fi
 
+    # Check for git dev before cloning anything, so a missing one leaves no
+    # overlay half installed.
+    for e in "${entries[@]}"; do
+      name="${e%%|*}"; url="${e#*|}"
+      [ -n "$url" ] && [ ! -e "$OVERLAYS/$name" ] && [ ! -L "$OVERLAYS/$name" ] || continue
+      help="$(git dev clone --help 2>/dev/null)" || help=
+      case "$help" in *--worktree*) break ;; esac
+      echo "!! cannot clone overlay $name: git dev clone --worktree (git-project) is not installed." >&2
+      echo "   Install it, then re-run install.sh:" >&2
+      echo "     uv tool install git-project --with git-project-core-plugins" >&2
+      echo '     ln -s "$(command -v git-project)" ~/.local/bin/git-dev' >&2
+      exit 1
+    done
+
     # Clone each, and record the apply order for link.sh (the base names nothing).
     : > "$OVERLAYS/.order"
     for e in "${entries[@]}"; do
       name="${e%%|*}"; url="${e#*|}"
+      get_overlay "$url" "$OVERLAYS/$name"
       ov="$(dot_overlay_checkout "$OVERLAYS/$name")"
-      get "$url" "$ov"
-      [ -e "$ov/.git" ] && printf '%s\n' "$name" >> "$OVERLAYS/.order"
+      [ -e "$ov/.git" ] && [ "$(git -C "$ov" rev-parse --is-inside-work-tree 2>/dev/null)" = true ] \
+        && printf '%s\n' "$name" >> "$OVERLAYS/.order"
     done
   fi
 fi

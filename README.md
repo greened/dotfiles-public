@@ -81,7 +81,8 @@ or, in one line:
 
 `install.sh [host-override]` clones the base, selects the overlays whose `match`
 applies to this machine, **suggests an apply order and lets you confirm or reorder
-it**, clones them, and runs the base `link.sh`.  The chosen order is recorded in
+it**, clones each missing one as a git-project umbrella with
+`git dev clone --worktree`, and runs the base `link.sh`. The chosen order is recorded in
 `~/lib/dotfiles-overlays/.order`. Overlay `link.sh` scripts, the git includes
 and `repo-sync` follow it. bash, Emacs, ssh and tmux load in glob order by
 overlay name. Matches against the FQDN
@@ -89,9 +90,10 @@ by default; pass a hostname to override.  Re-run any time to update.  Finally, i
 a Claude-config manifest exists, it bootstraps `~/.claude` too (see **Claude Code
 config** below).
 
-Prerequisites: `git`, and a GitHub SSH key (needed to clone private overlays; the
-public base alone works without one — a missing overlay just warns and is
-skipped).
+Prerequisites: `git`, `git dev` from git-project with its core plugins (needed
+to clone an overlay) and a GitHub SSH key (needed to clone private overlays).
+The public base alone works without the key, since an overlay it cannot fetch
+just warns and is skipped.
 
 ### SSH identity for private overlays
 
