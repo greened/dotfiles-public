@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
-# Check how install.sh fetches overlays: a missing one is cloned as a git dev
-# umbrella, an existing flat clone or umbrella is fast-forwarded, and anything
-# it cannot use is left alone with a warning.
+# Check how install.sh fetches the base and its overlays: a missing one is
+# cloned as a git dev umbrella, an existing flat clone or umbrella is
+# fast-forwarded, and anything it cannot use is left alone with a warning. A
+# base it cannot use aborts the install.
 #
 #     ./install-selftest.sh
 #
-# $HOME is not moved. install.sh's own paths, its manifests, DOTFILES_LIB and
-# CLAUDE_HOME, point into a scratch tree, and the scratch base's link.sh is a
-# stub. Git still reads the user's global config. Git runs no
-# hooks here, since the user's hooks judge real repos and log to the real
-# home. The remotes are local bare repos, so it needs no network. It needs git
-# dev, as install.sh does, and fails rather than skips without it.
+# install.sh's own paths, its manifests, DOTFILES_LIB and CLAUDE_HOME, point
+# into a scratch tree. Runs 1 to 6 keep $HOME and stub the base's link.sh, so
+# git still reads the user's global config there. Runs 7 to 13 fetch the base
+# itself, and a fresh base runs its real link.sh, so they move $HOME to a
+# scratch home. Git runs no hooks here, since the user's hooks
+# judge real repos and log to the real home. The remotes are local bare repos,
+# so it needs no network. It needs git dev, as install.sh does, and fails
+# rather than skips without it.
 set -uo pipefail
 
 export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null
@@ -208,6 +211,100 @@ expect 'nothing is cloned there' [ ! -e "$L2/dotfiles-overlays/ovA" ]
 expect 'an existing flat clone there is still used' \
        order_is 'ovC ' "$L2/dotfiles-overlays"
 show_log "$f0" "$tmp/run6.log"
+
+# A freshly cloned base runs its real link.sh, so these runs move HOME to a
+# scratch home of plain directories. A symlink out of it would let link.sh
+# write through into the real home. No overlays, since each would run the
+# base's link.sh again.
+P="$R/public/dotfiles-public.git"
+git clone -q --bare "file://$R/base.git" "$P" || exit 1
+git -C "$P" update-ref refs/heads/main main~1 || exit 1
+H="$tmp/home"; mkdir -p "$H"
+M3="$tmp/overlays3"; : > "$M3"
+
+# run_base LOG LIB [VAR=VALUE...]: run with LIB, the scratch home and no
+# overlays.
+run_base() {
+  local log="$1" lib="$2"; shift 2
+  # Git reads an empty XDG_CONFIG_HOME as unset.
+  run "$log" XDG_CONFIG_HOME= XDG_DATA_HOME= XDG_STATE_HOME= XDG_CACHE_HOME= \
+      HOME="$H" DOTFILES_LIB="$lib" DOTFILES_MANIFEST="$M3" DOTFILES_PUBLIC_URL="file://$P" "$@"
+}
+linked_from() { [ "$(readlink "$H/.tmux.conf")" = "$1/tmux/tmux.conf" ]; }
+
+# 7. No base yet, so it is cloned as an umbrella and used from main.
+f0=$fail
+L3="$tmp/lib3"
+run_base "$tmp/run7.log" "$L3"
+expect 'run 7 succeeds' [ "$rc" -eq 0 ]
+expect 'a missing base is cloned as an umbrella' [ -d "$L3/dotfiles/.dotfiles-public.git" ]
+expect 'its checkout is main' [ -e "$L3/dotfiles/main/.git" ]
+expect 'the base main tracks its remote' tracks "$L3/dotfiles/main"
+expect 'link.sh runs from main' linked_from "$L3/dotfiles/main"
+expect 'the repo install.sh runs from still keeps its config' \
+       cmp -s "$tmp/cwdrepo/.git/config" "$tmp/cwdrepo.config"
+show_log "$f0" "$tmp/run7.log"
+
+# 8. The base remote moved, so the umbrella fast-forwards.
+f0=$fail
+git -C "$P" update-ref refs/heads/main "$seed_tip" || exit 1
+run_base "$tmp/run8.log" "$L3"
+expect 'run 8 succeeds' [ "$rc" -eq 0 ]
+expect 'an umbrella base fast-forwards' at_tip "$L3/dotfiles/main"
+expect 'link.sh still runs from main' linked_from "$L3/dotfiles/main"
+show_log "$f0" "$tmp/run8.log"
+
+# 9. A base that cannot be fetched aborts and leaves nothing behind.
+f0=$fail
+L4="$tmp/lib4"
+run_base "$tmp/run9.log" "$L4" DOTFILES_PUBLIC_URL="file://$R/public/nonexistent.git"
+expect 'run 9 stops' [ "$rc" -ne 0 ]
+expect 'it says the base could not be fetched' \
+       has "$tmp/run9.log" 'failed to fetch required dotfiles'
+expect 'no base is left behind' [ ! -e "$L4/dotfiles" ]
+show_log "$f0" "$tmp/run9.log"
+
+# 10. No base and no git dev.
+f0=$fail
+run_base "$tmp/run10.log" "$L4" PATH="$nogitdev"
+expect 'run 10 stops' [ "$rc" -ne 0 ]
+expect 'it names the base' has "$tmp/run10.log" 'cannot clone the base'
+expect 'the base is not cloned' [ ! -e "$L4/dotfiles" ]
+show_log "$f0" "$tmp/run10.log"
+
+# 11. A base directory with no checkout is kept.
+f0=$fail
+mkdir -p "$L4/dotfiles"; echo keep > "$L4/dotfiles/keep"
+run_base "$tmp/run11.log" "$L4"
+expect 'run 11 stops' [ "$rc" -ne 0 ]
+expect 'it warns about the base directory' \
+       has "$tmp/run11.log" 'dotfiles exists but holds no checkout'
+expect 'the base directory is left as it was' [ "$(ls -A "$L4/dotfiles")" = keep ]
+show_log "$f0" "$tmp/run11.log"
+
+# 12. No base and LIB is inside a git repo.
+f0=$fail
+L5="$tmp/inrepo/lib5"
+run_base "$tmp/run12.log" "$L5"
+expect 'run 12 stops' [ "$rc" -ne 0 ]
+expect 'it warns that LIB is inside a repo' \
+       has "$tmp/run12.log" 'is inside a git repo, so the base'
+expect 'the base is not cloned there' [ ! -e "$L5/dotfiles" ]
+show_log "$f0" "$tmp/run12.log"
+
+# 13. A base umbrella with no main worktree is kept and gets the rename hint.
+f0=$fail
+L6="$tmp/lib6"; mkdir -p "$L6"
+(cd "$L6" && git dev clone --worktree "file://$R/dotfiles-ovB.git" dotfiles </dev/null) \
+  >/dev/null 2>&1 || exit 1
+run_base "$tmp/run13.log" "$L6"
+expect 'run 13 stops' [ "$rc" -ne 0 ]
+expect 'a base with no main gets the rename hint' \
+       has "$tmp/run13.log" 'dotfiles has no main branch'
+expect 'it is not fetched as a flat clone' \
+       lacks "$tmp/run13.log" 'failed to fetch required'
+expect 'its worktree is kept' [ -e "$L6/dotfiles/master/.git" ]
+show_log "$f0" "$tmp/run13.log"
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

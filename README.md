@@ -70,10 +70,13 @@ private.
 
 ## Install (fresh machine)
 
-The installer lives in this repo, so fetch it first (and place your manifest):
+The installer lives in this repo, so fetch it first (and place your manifest).
+The steps below clone it as a git-project umbrella, with its checkout in
+`main/`, so install git-project first:
 
-    git clone git@github.com:greened/dotfiles-public.git ~/lib/dotfiles
-    ~/lib/dotfiles/install.sh
+    mkdir -p ~/lib && cd ~/lib
+    git dev clone --worktree git@github.com:greened/dotfiles-public.git dotfiles
+    ~/lib/dotfiles/main/install.sh
 
 or, in one line:
 
@@ -90,9 +93,9 @@ by default; pass a hostname to override.  Re-run any time to update.  Finally, i
 a Claude-config manifest exists, it bootstraps `~/.claude` too (see **Claude Code
 config** below).
 
-Prerequisites: `git`, `git dev` from git-project with its core plugins (needed
-to clone an overlay) and a GitHub SSH key (needed to clone private overlays).
-The public base alone works without the key, since an overlay it cannot fetch
+Prerequisites: `git`, `git dev` from git-project with its core plugins and a
+GitHub SSH key (needed to clone private overlays).
+The base clones over SSH, so it needs the key too. An overlay it cannot fetch
 just warns and is skipped.
 
 ### SSH identity for private overlays

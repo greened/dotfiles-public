@@ -14,15 +14,16 @@
 #
 # Fresh machine (the script lives in the repo, so fetch it first; put your overlay
 # manifest at ~/.config/dotfiles/overlays):
-#   git clone git@github.com:greened/dotfiles-public.git ~/lib/dotfiles \
-#     && ~/lib/dotfiles/install.sh
+#   mkdir -p ~/lib && cd ~/lib \
+#     && git dev clone --worktree git@github.com:greened/dotfiles-public.git dotfiles \
+#     && ~/lib/dotfiles/main/install.sh
 # or, once the repo is public:
 #   curl -fsSL https://raw.githubusercontent.com/greened/dotfiles-public/main/install.sh | bash
-# Prerequisites: git, git dev (git-project) to clone an overlay, and a GitHub
-# SSH key (required for private overlays).
+# Prerequisites: git, git dev (git-project) and a GitHub SSH key (required
+# for private overlays).
 set -euo pipefail
 
-PUBLIC_URL="git@github.com:greened/dotfiles-public.git"
+PUBLIC_URL="${DOTFILES_PUBLIC_URL:-git@github.com:greened/dotfiles-public.git}"
 LIB="${DOTFILES_LIB:-$HOME/lib}"; PUB="$LIB/dotfiles"; OVERLAYS="$LIB/dotfiles-overlays"
 # A git-project umbrella keeps the checkout in its default worktree.
 [ -f "$PUB/.git" ] && [ -d "$PUB/main" ] && PUB="$PUB/main"
@@ -99,8 +100,47 @@ rename_hint() {
   fi
 }
 
+# need_git_dev WHAT: exit unless git dev can clone WHAT.
+need_git_dev() {
+  local help
+  help="$(git dev clone --help </dev/null 2>/dev/null)" || help=
+  case "$help" in *--worktree*) return 0 ;; esac
+  echo "!! cannot clone $1: git dev clone --worktree (git-project) is not installed." >&2
+  echo "   Install it, then re-run install.sh:" >&2
+  echo "     uv tool install git-project --with git-project-core-plugins" >&2
+  echo '     ln -s "$(command -v git-project)" ~/.local/bin/git-dev' >&2
+  exit 1
+}
+
+# get_base: like get_overlay, but the base is required, so anything that
+# stops its clone aborts. Sets PUB to the checkout.
+get_base() {
+  local dir="$LIB/dotfiles" rc=0
+  if [ "$PUB" = "$dir" ] && [ -f "$dir/.git" ] \
+       && [ "$(git -C "$dir" rev-parse --is-bare-repository 2>/dev/null)" = true ]; then
+    rename_hint dotfiles "$dir"; return 1
+  fi
+  if [ -e "$PUB/.git" ]; then get "$PUBLIC_URL" "$PUB" required; return; fi
+  if [ -e "$dir" ] || [ -L "$dir" ]; then
+    echo "!! $dir exists but holds no checkout. Move it aside and re-run install.sh." >&2
+    return 1
+  fi
+  if git -C "$LIB" rev-parse --git-dir >/dev/null 2>&1; then
+    echo "!! $LIB is inside a git repo, so the base is not cloned." >&2
+    echo "   Set DOTFILES_LIB to a directory outside any repo." >&2
+    return 1
+  fi
+  need_git_dev "the base"
+  (cd "$LIB" && git dev clone --worktree "$PUBLIC_URL" dotfiles </dev/null) || rc=$?
+  if [ "$rc" -eq 0 ] && [ -e "$dir/main/.git" ]; then PUB="$dir/main"; return 0; fi
+  rm -rf "$dir"
+  echo "!! failed to fetch required dotfiles, aborting." >&2
+  echo "   Its remote must be reachable and have a main branch." >&2
+  return 1
+}
+
 mkdir -p "$LIB" "$OVERLAYS"
-get "$PUBLIC_URL" "$PUB" required
+get_base
 . "$PUB/bash/lib/overlays.sh"
 
 # --- overlays from the private manifest --------------------------------------
@@ -165,13 +205,7 @@ else
     for e in "${entries[@]}"; do
       name="${e%%|*}"; url="${e#*|}"
       [ -n "$url" ] && [ ! -e "$OVERLAYS/$name" ] && [ ! -L "$OVERLAYS/$name" ] || continue
-      help="$(git dev clone --help 2>/dev/null)" || help=
-      case "$help" in *--worktree*) break ;; esac
-      echo "!! cannot clone overlay $name: git dev clone --worktree (git-project) is not installed." >&2
-      echo "   Install it, then re-run install.sh:" >&2
-      echo "     uv tool install git-project --with git-project-core-plugins" >&2
-      echo '     ln -s "$(command -v git-project)" ~/.local/bin/git-dev' >&2
-      exit 1
+      need_git_dev "overlay $name"; break
     done
 
     # Clone each, and record the apply order for link.sh (the base names nothing).
