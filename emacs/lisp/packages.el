@@ -1908,7 +1908,11 @@ end tell
               (buffer-face-mode t)
               ;; Claude Code puts a no-break space after its prompt, which
               ;; Emacs would underline. Show what the terminal drew.
-              (setq-local nobreak-char-display nil))))
+              (setq-local nobreak-char-display nil)
+              ;; The default sizes the pty to the smallest window showing
+              ;; the buffer, and that can be the daemon's hidden F1 frame.
+              (setq-local window-adjust-process-window-size-function
+                          #'window-adjust-process-window-size-largest))))
 
 ;; Respawn a stale ssh vterm in one command (C-c R).  A "local but shareable"
 ;; package: a self-contained, publishable package that still lives inside
