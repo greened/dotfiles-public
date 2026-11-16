@@ -8,15 +8,17 @@
 ;; CLAUDE_COMMIT_MSG and waits. `C-x #' means the message is approved.
 ;; `C-x k' means it is not.
 ;;
-;; Afterwards the two are INDISTINGUISHABLE. `server-kill-new-buffers' is t
-;; here, so both leave no buffer behind and both let the client exit 0, and the
-;; receipt, its age against HEAD and the staged tree all read the same either
-;; way. An agent holding only those signals must either refuse every approval
-;; or accept every dismissal.
+;; Afterwards the buffer, the receipt, its age against HEAD and the staged
+;; tree read the same either way, because `server-kill-new-buffers' is t
+;; here and both leave no buffer behind. An agent holding only those signals
+;; must either refuse every approval or accept every dismissal.
 ;;
 ;; `C-x k' never reaches `server-done' and `C-x #' always does, so an advice
-;; there is the one place the difference can be observed. This file is that
+;; there is the one place an approval can be observed. This file is that
 ;; advice.
+;;
+;; A discard reaches the client too. Killing a gate that a client still
+;; waits on sends it an error, so its emacsclient exits 1 at once.
 ;;
 ;; An accept is recorded twice, and the two records fail differently.
 ;;
@@ -83,7 +85,7 @@
 ;; can still act on it.
 ;;
 ;; A real gate is labelled too. Its header line names the repository and the
-;; two keys. He kills a buffer he cannot identify, and `C-x k' discards the
+;; keys. He kills a buffer he cannot identify, and `C-x k' discards the
 ;; message as quietly as `C-x #' approves it.
 ;;
 ;; commit-land may list claims below the scissors line that the diff neither
@@ -216,11 +218,13 @@ for `server-visit-hook'."
   "Set the header line of a gate that lists CLAIMS."
   (let* ((why commit-gate--refused)
          (repo (ignore-errors (commit-gate-repo-label (buffer-file-name))))
+         (for (if repo (concat " for " repo) ""))
+         ;; The repo comes first, because the window cuts off a long line.
          (text (concat
                   (if why
-                      (concat "Not approved. " why ".")
-                    (format "Commit gate%s. C-x # approves. C-x k discards."
-                            (if repo (concat " for " repo) "")))
+                      (format "Not approved%s. %s." for why)
+                    (format "Commit gate%s. C-x # approves. C-x k or C-c C-k \
+discards." for))
                   (and claims
                        (format " %d of %d listed claims accepted with C-c C-a. \
 A claim left in the message unaccepted refuses the landing."
@@ -349,6 +353,7 @@ its text. Cut the claim from the message, or C-x k and rerun commit-land"))
          ((member (car c) commit-gate--accepted-claims)
           (setq commit-gate--accepted-claims
                 (delete (car c) commit-gate--accepted-claims))
+          (commit-gate--log-claim "unaccept" (car c))
           (commit-gate--mark-claims claims)
           (commit-gate--draw-banner claims)
           (message "Unaccepted."))
@@ -359,14 +364,25 @@ its text. Cut the claim from the message, or C-x k and rerun commit-land"))
                  "yes")
           (setq commit-gate--accepted-claims
                 (append commit-gate--accepted-claims (list (car c))))
+          (commit-gate--log-claim "accept" (car c))
           (commit-gate--mark-claims claims)
           (commit-gate--draw-banner claims)
           (message "Accepted. C-x # writes it with the approval."))
-         (t (message "Not accepted."))))))))
+         (t
+          (commit-gate--log-claim "decline" (car c))
+          (message "Not accepted."))))))))
+
+(defun commit-gate-discard ()
+  "Discard this commit gate, as `C-x k' does."
+  (interactive)
+  (unless (commit-gate-buffer-p)
+    (user-error "Not a commit gate"))
+  (kill-buffer))
 
 (defvar commit-gate-claims-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "C-c C-a") #'commit-gate-accept-claim)
+    (define-key map (kbd "C-c C-k") #'commit-gate-discard)
     map)
   "Keys for a commit gate buffer.")
 
@@ -391,7 +407,8 @@ Written for `after-change-functions', so no error may reach his editing."
           (ignore-errors (commit-gate--draw-banner claims)))))))
 
 (define-minor-mode commit-gate-claims-mode
-  "Accept a claim the commit gate lists with \\[commit-gate-accept-claim]."
+  "Accept a claim the commit gate lists with \\[commit-gate-accept-claim].
+Discard the gate with \\[commit-gate-discard]."
   :lighter nil
   :keymap commit-gate-claims-mode-map
   (if commit-gate-claims-mode
@@ -605,13 +622,36 @@ records which spelling the last accept used, for a person reading the file."
                             ".record")
                     commit-gate-record-directory))
 
+(defun commit-gate--claim-log (file)
+  "The `claim' lines of the local record FILE, or \"\" when it has none."
+  (if (not (file-readable-p file))
+      ""
+    (with-temp-buffer
+      (insert-file-contents file)
+      (keep-lines "^claim " (point-min) (point-max))
+      (buffer-string))))
+
 (defun commit-gate--write-record (gate stamp &optional nonce)
   "Write the local record of GATE accepted at STAMP, for the run NONCE.
-This truncates, so a fresh accept replaces an older one at the same path."
+This truncates, so a fresh accept replaces an older one at the same path.
+The claim log is kept."
   (make-directory commit-gate-record-directory t)
-  (write-region (format "accepted %s\ngate %s\n%s" stamp gate
-                        (if nonce (format "nonce %s\n" nonce) ""))
-                nil (commit-gate--record-file gate) nil 'quiet))
+  (let ((file (commit-gate--record-file gate)))
+    (write-region (format "accepted %s\ngate %s\n%s%s" stamp gate
+                          (if nonce (format "nonce %s\n" nonce) "")
+                          (or (ignore-errors (commit-gate--claim-log file)) ""))
+                  nil file nil 'quiet)))
+
+(defun commit-gate--log-claim (action id)
+  "Append a `claim ACTION ID EPOCH' line to this gate's local record.
+ACTION is \"accept\", \"unaccept\" or \"decline\". A fault is swallowed,
+because the log must never stop an accept."
+  (ignore-errors
+    (make-directory commit-gate-record-directory t)
+    (write-region (format "claim %s %s %s\n" action id
+                          (format-time-string "%s"))
+                  nil (commit-gate--record-file (buffer-file-name))
+                  'append 'quiet)))
 
 (defun commit-gate--record-outcome (gate stamp outcome)
   "Append the sentinel OUTCOME for the accept of GATE at STAMP.
@@ -789,6 +829,35 @@ A nil result means UNPROVEN. It does not mean the message was refused."
                   (and (or (null since) (>= stamp since))
                        stamp)))))))
 
+(defvar server-buffer-clients)
+(declare-function server-send-string "server" (proc string))
+(declare-function server-quote-arg "server" (arg))
+
+(defconst commit-gate-discard-message
+  "The commit gate was discarded in Emacs, so nothing was approved"
+  "What a client waiting on a discarded gate is sent as its error.")
+
+(defun commit-gate--refuse-on-kill ()
+  "Send each client still waiting on this gate an error, so it exits 1.
+`server-done' and the cleanup of a dropped client both clear
+`server-buffer-clients' before they kill the buffer, so a client still
+listed here was not approved."
+  (when (and (commit-gate-buffer-p) (boundp 'server-buffer-clients))
+    (dolist (proc server-buffer-clients)
+      (when (process-live-p proc)
+        (ignore-errors
+          (server-send-string
+           proc (concat "-error "
+                        (server-quote-arg commit-gate-discard-message))))))))
+
+(defun commit-gate-refuse-on-discard ()
+  "Make a kill of this gate a refusal its client can see.
+Does nothing unless the current buffer is `commit-gate-buffer-p'. Written
+for `server-visit-hook'."
+  (when (commit-gate-buffer-p)
+    ;; Ahead of `server-kill-buffer', which forgets the clients.
+    (add-hook 'kill-buffer-hook #'commit-gate--refuse-on-kill -50 t)))
+
 (defun commit-gate-armed-p ()
   "Whether the accept recorder is installed on `server-done'."
   (and (advice-member-p #'commit-gate-record-accept 'server-done) t))
@@ -804,7 +873,8 @@ to re-run when the configuration is reloaded."
   (add-hook 'server-visit-hook #'commit-gate-capture-nonce)
   (add-hook 'server-visit-hook #'commit-gate-warn-if-misnamed)
   (add-hook 'server-visit-hook #'commit-gate-show-banner)
-  (add-hook 'server-visit-hook #'commit-gate-show-claims))
+  (add-hook 'server-visit-hook #'commit-gate-show-claims)
+  (add-hook 'server-visit-hook #'commit-gate-refuse-on-discard))
 
 (provide 'commit-gate)
 

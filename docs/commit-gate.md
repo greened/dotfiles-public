@@ -33,7 +33,8 @@ so an agent on a dev VM can open the message in the laptop's Emacs.
    named `CLAUDE_COMMIT_MSG`.
 2. It opens that file with a blocking `emacsclient` and waits.
 3. When Emacs visits the buffer, `commit-gate` reads `.nonce` and labels the
-   header line with the repository and the two keys.
+   header line with the repository and the keys. A refused gate keeps the
+   repository in its header line, so two open gates can be told apart.
 4. The human edits and presses `C-x #`. An advice on `server-done` records
    the approval, and the client exits.
 5. The landing script finds `.closed` in the run directory holding its own
@@ -44,14 +45,22 @@ so an agent on a dev VM can open the message in the laptop's Emacs.
 
 ## Why a client exit is not enough
 
-The client exits 0 after `C-x #` and after `C-x k` alike.
-`server-kill-new-buffers` defaults to t, so both leave no buffer behind. A
-forwarded socket that drops mid-gate ends the client too. So an exit says the
-gate closed, not that anyone approved it.
+The client exits 0 after `C-x #`. Without this package it exits 0 after
+`C-x k` as well, and `server-kill-new-buffers` defaults to t, so both leave
+no buffer behind. A forwarded socket that drops mid-gate ends the
+client too. So an exit says the gate closed, not that anyone approved it.
 
 `C-x #` reaches `server-done` and `C-x k` does not. The advice on
-`server-done` is the one place the difference shows, so that advice writes
-the evidence.
+`server-done` is the one place an approval shows, so that advice writes the
+evidence.
+
+## A discard reaches the client
+
+Killing a gate that a client still waits on, with `C-x k` or `C-c C-k`,
+sends that client an error. Its `emacsclient` exits 1 at once, so a landing
+script can refuse then rather than wait for a `.closed` that will never
+come. `server-done` detaches the clients before it kills the buffer, so an
+approval exits 0.
 
 ## What an approval writes
 
@@ -101,6 +110,10 @@ text. It shows the claim and accepts it only when you type `yes` in full.
 The header line counts the accepted claims, and each accepted line is
 marked. Both follow your edits. `C-c C-a` on an accepted claim unaccepts
 it without asking.
+
+Each accept, unaccept and declined accept appends a `claim accept ID EPOCH`,
+`claim unaccept ID EPOCH` or `claim decline ID EPOCH` line to the gate's
+local record, and an approval keeps those lines. They trace what happened at the gate and approve nothing.
 
 The id must be the first 16 hex characters of the SHA-256 of the claim's
 UTF-8 text. A line whose id does not match was edited and cannot be

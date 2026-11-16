@@ -70,6 +70,11 @@ The `.nonce' file holds TEXT when given, else NONCE and a newline."
   "FILE's contents as a string."
   (with-temp-buffer (insert-file-contents file) (buffer-string)))
 
+(defun commit-gate-t--refused-with (reason header)
+  "Whether HEADER says not approved, for any repo, and then starts REASON."
+  (and (string-match "\\`Not approved\\(?: for [^\n]*?\\)?\\. " header)
+       (string-prefix-p reason (substring header (match-end 0)))))
+
 (defmacro commit-gate-t--in-dir (dir &rest body)
   "Run BODY with DIR bound to a fresh directory, removed afterwards.
 The local record directory is redirected under DIR for the same extent, so a
@@ -315,7 +320,7 @@ proceed."
             (should (string-match-p "\\.nonce is malformed" (cadr err)))
             (should (string-match-p "C-x k to discard" (cadr err)))
             (should (string-match-p "rerun commit-land" (cadr err))))
-          (should (string-prefix-p "Not approved. .nonce is malformed"
+          (should (commit-gate-t--refused-with ".nonce is malformed"
                                    header-line-format))
           (should (string-suffix-p
                    (concat (expand-file-name ".nonce" run) ".")
@@ -522,7 +527,7 @@ next press approves. The reason leads the header line and the path ends it."
                                  :type 'user-error)))
           (should (string-match-p "exit 255" (cadr err)))
           (should (string-match-p "C-x # again" (cadr err))))
-        (should (string-prefix-p "Not approved. ssh could not reach"
+        (should (commit-gate-t--refused-with "ssh could not reach"
                                  header-line-format))
         (should (string-suffix-p (concat nonce-file ".")
                                  (string-replace "%%" "%" header-line-format)))
@@ -553,7 +558,7 @@ that finds no nonce must refuse rather than approve with the epoch."
         (should (equal commit-gate-nonce
                        (cons 'refused ".nonce is gone, so its run has ended")))
         (should-error (commit-gate-record-accept) :type 'user-error)
-        (should (string-prefix-p "Not approved. .nonce is gone"
+        (should (commit-gate-t--refused-with ".nonce is gone"
                                  header-line-format)))
       (should-not (commit-gate-accepted-p gate))
       (should-not (file-exists-p (concat local ".closed"))))))
@@ -576,7 +581,7 @@ refusal and does not promise a read that is not running."
             (should-not (string-match-p "being read again" (cadr err)))))
         (should (equal commit-gate-nonce
                        (cons 'refused ".nonce could not be read")))
-        (should (string-prefix-p "Not approved. .nonce could not be read"
+        (should (commit-gate-t--refused-with ".nonce could not be read"
                                  header-line-format))
         (should-not (get-process "commit-gate-nonce")))
       (should-not (commit-gate-accepted-p gate)))))
@@ -843,6 +848,50 @@ when ACCEPT is non-nil, and return the stamp written."
                      (concat commit-gate-t--nonce-a "\naccept "
                              commit-gate-t--id-a "\n"))))))
 
+(defun commit-gate-t--claim-lines (gate)
+  "The `claim' lines of GATE's local record, without their times."
+  (seq-keep (lambda (l)
+              (and (string-match "\\`\\(claim [a-z]+ [0-9a-f]+\\) [0-9]+\\'" l)
+                   (match-string 1 l)))
+            (split-string (commit-gate-t--contents
+                           (commit-gate--record-file gate))
+                          "\n" t)))
+
+(ert-deftest commit-gate-logs-each-accept-and-unaccept ()
+  "So a lost accept can be traced. The log is not an approval."
+  (commit-gate-t--in-dir dir
+    (let ((gate (commit-gate-t--claim-gate
+                 dir (commit-gate-t--gate-text
+                      "Subject\n"
+                      (commit-gate-t--claim commit-gate-t--id-a
+                                            commit-gate-t--claim-a)))))
+      (commit-gate-t--visit gate
+        (commit-gate-t--goto-claim commit-gate-t--claim-a)
+        (commit-gate-t--answering "yes" (commit-gate-accept-claim))
+        (commit-gate-t--answering "yes" (commit-gate-accept-claim)))
+      (should (equal (commit-gate-t--claim-lines gate)
+                     (list (concat "claim accept " commit-gate-t--id-a)
+                           (concat "claim unaccept " commit-gate-t--id-a))))
+      (should-not (commit-gate-accepted-p gate))
+      (should-not (file-exists-p
+                   (expand-file-name ".closed" (file-name-directory gate)))))))
+
+(ert-deftest commit-gate-an-approval-keeps-the-claim-log ()
+  "The approval truncates the record, and the log must survive it."
+  (commit-gate-t--in-dir dir
+    (let ((gate (commit-gate-t--claim-gate
+                 dir (commit-gate-t--gate-text
+                      "Subject\n"
+                      (commit-gate-t--claim commit-gate-t--id-a
+                                            commit-gate-t--claim-a)))))
+      (commit-gate-t--visit gate
+        (commit-gate-t--goto-claim commit-gate-t--claim-a)
+        (commit-gate-t--answering "yes" (commit-gate-accept-claim))
+        (commit-gate-record-accept))
+      (should (commit-gate-accepted-p gate))
+      (should (equal (commit-gate-t--claim-lines gate)
+                     (list (concat "claim accept " commit-gate-t--id-a)))))))
+
 (ert-deftest commit-gate-accept-with-no-claim-lines-writes-nothing ()
   "There is nothing to ask about, so he is not asked and no stamp appears.
 The approval then writes the bare nonce."
@@ -875,6 +924,21 @@ The approval then writes the bare nonce."
         (should-not commit-gate--accepted-claims)
         (commit-gate-record-accept))
       (should (equal (commit-gate-t--closed gate) commit-gate-t--nonce-a)))))
+
+(ert-deftest commit-gate-logs-a-declined-accept ()
+  "A reply other than yes is the likeliest silent loss, so it is logged."
+  (commit-gate-t--in-dir dir
+    (let ((gate (commit-gate-t--claim-gate
+                 dir (commit-gate-t--gate-text
+                      "Subject\n"
+                      (commit-gate-t--claim commit-gate-t--id-a
+                                            commit-gate-t--claim-a)))))
+      (commit-gate-t--visit gate
+        (commit-gate-t--goto-claim commit-gate-t--claim-a)
+        (commit-gate-t--answering "y" (commit-gate-accept-claim)))
+      (should (equal (commit-gate-t--claim-lines gate)
+                     (list (concat "claim decline " commit-gate-t--id-a))))
+      (should-not (commit-gate-accepted-p gate)))))
 
 ;; Anything but yes typed in full leaves the claim unaccepted.
 (ert-deftest commit-gate-declined-accept-no ()
@@ -1166,7 +1230,7 @@ and cutting that line counts as one."
         (commit-gate-show-banner)
         (commit-gate-show-claims)
         (should-error (commit-gate-record-accept) :type 'user-error)
-        (should (string-prefix-p "Not approved. .nonce is malformed"
+        (should (commit-gate-t--refused-with ".nonce is malformed"
                                  header-line-format))
         (should (string-match-p "0 of 1 listed claims accepted"
                                 header-line-format))
@@ -1174,7 +1238,7 @@ and cutting that line counts as one."
         (setq commit-gate-nonce (cons 'nonce commit-gate-t--nonce-a))
         (commit-gate-t--goto-claim commit-gate-t--claim-a)
         (commit-gate-t--answering "yes" (commit-gate-accept-claim))
-        (should (string-prefix-p "Not approved. .nonce is malformed"
+        (should (commit-gate-t--refused-with ".nonce is malformed"
                                  header-line-format))
         (should (string-match-p "1 of 1 listed claims accepted"
                                 header-line-format))
@@ -1304,13 +1368,31 @@ and cutting that line counts as one."
   (should-not (commit-gate-repo-label "/tmp/CLAUDE_COMMIT_MSG"))
   (should-not (commit-gate-repo-label "CLAUDE_COMMIT_MSG")))
 
-(ert-deftest commit-gate-banner-names-the-repo-and-both-keys ()
-  "The two keys are one apart and do opposite things, so both are named."
+(ert-deftest commit-gate-banner-names-the-repo-and-the-keys ()
+  "C-x # and C-x k are one apart and do opposite things, so each is named,
+and so is the other key that discards."
   (commit-gate-t--with-name "/h/dotfiles/.git/worktrees/wt/CLAUDE_COMMIT_MSG"
     (commit-gate-show-banner)
     (should (string-match-p "dotfiles, worktree wt" header-line-format))
     (should (string-match-p "C-x # approves" header-line-format))
-    (should (string-match-p "C-x k discards" header-line-format))))
+    (should (string-match-p "C-x k or C-c C-k discards" header-line-format))))
+
+(ert-deftest commit-gate-a-refused-banner-names-the-repo-first ()
+  "Two open gates must be told apart even when one is refused, and the
+reason ends in a path the window may cut off."
+  (commit-gate-t--with-name "/h/dotfiles/.git/claude-land/n/CLAUDE_COMMIT_MSG"
+    (setq commit-gate--refused ".nonce is malformed")
+    (commit-gate-show-banner)
+    (should (string-prefix-p "Not approved for dotfiles. .nonce is malformed."
+                             header-line-format))))
+
+(ert-deftest commit-gate-a-refused-banner-outside-a-repo-gives-the-reason ()
+  "With no repo in the path the reason follows at once."
+  (commit-gate-t--with-name "/tmp/CLAUDE_COMMIT_MSG"
+    (setq commit-gate--refused ".nonce is malformed")
+    (commit-gate-show-banner)
+    (should (string-prefix-p "Not approved. .nonce is malformed."
+                             header-line-format))))
 
 (ert-deftest commit-gate-banner-shows-a-percent-sign-as-written ()
   "A bare % in the header line is a format code and would be eaten.
@@ -1411,6 +1493,144 @@ commit gate, for prevue, worktree wt."))))))
     (should (equal (commit-gate-announce-approval (current-buffer) nil nil)
                    "Approved the commit."))))
 
+;;; Through a real client
+
+;; A landing script can read a discard from its emacsclient's exit, so these
+;; park a real one on the gate. The server is this Emacs, listening on a
+;; socket in the test's own directory.
+
+(defconst commit-gate-t--emacsclient
+  (expand-file-name "emacsclient" invocation-directory)
+  "The emacsclient built with the Emacs running the tests.")
+
+(defun commit-gate-t--client-exit (client)
+  "Wait for CLIENT to exit and return its exit status."
+  (with-timeout (10 (error "emacsclient did not exit"))
+    (while (process-live-p client)
+      (accept-process-output client 0.05))
+    ;; The exit can be seen before the last of the output is read.
+    (while (accept-process-output client 0.05)))
+  (process-exit-status client))
+
+(defmacro commit-gate-t--with-client (dir client gate-form &rest body)
+  "Park an emacsclient on the gate GATE-FORM makes under DIR, then run BODY.
+CLIENT is bound to the emacsclient process. BODY runs in the gate buffer,
+visited by the server as it visits his, with the package armed."
+  (declare (indent 3))
+  `(commit-gate-t--in-dir ,dir
+     (skip-unless (and noninteractive (not server-process)
+                       (file-executable-p commit-gate-t--emacsclient)))
+     (let* ((process-environment
+             (seq-remove
+              (lambda (v)
+                (string-match-p
+                 "\\`\\(?:EMACS_SERVER_FILE\\|ALTERNATE_EDITOR\\)=" v))
+              process-environment))
+            (server-socket-dir (expand-file-name "server" ,dir))
+            (server-name "commit-gate-t")
+            (server-use-tcp nil)
+            (server-kill-new-buffers t)
+            (server-visit-hook nil)
+            (find-file-hook nil)
+            (gate ,gate-form)
+            (,client nil))
+       (unwind-protect
+           (progn
+             (commit-gate-arm)
+             (server-start nil t)
+             (setq ,client
+                   (make-process
+                    :name "commit-gate-t-client"
+                    :buffer (generate-new-buffer " *commit-gate-t-client*")
+                    :connection-type 'pipe
+                    :noquery t
+                    :command (list commit-gate-t--emacsclient "-s"
+                                   (expand-file-name server-name
+                                                     server-socket-dir)
+                                   gate)))
+             (with-timeout (10 (error "the gate was never visited"))
+               (while (not (let ((b (get-file-buffer gate)))
+                             (and b (buffer-local-value
+                                     'server-buffer-clients b))))
+                 (accept-process-output nil 0.05)))
+             (with-current-buffer (get-file-buffer gate)
+               ,@body))
+         (when (process-live-p ,client)
+           (delete-process ,client))
+         (when ,client
+           (kill-buffer (process-buffer ,client)))
+         (let ((b (get-file-buffer gate)))
+           (when b
+             (with-current-buffer b (set-buffer-modified-p nil))
+             (kill-buffer b)))
+         (server-start t t)
+         (advice-remove 'server-done #'commit-gate-record-accept)
+         (advice-remove 'server-edit #'commit-gate-announce-pending)))))
+
+(defun commit-gate-t--client-output (client)
+  "What CLIENT printed."
+  (with-current-buffer (process-buffer client) (buffer-string)))
+
+(ert-deftest commit-gate-c-x-k-refuses-through-the-client ()
+  "A discard must reach the client, or a landing script waits for a
+`.closed' that never comes."
+  (commit-gate-t--with-client dir client
+      (commit-gate-t--run-dir dir commit-gate-t--nonce-a)
+    (kill-buffer)
+    (should (equal (commit-gate-t--client-exit client) 1))
+    (should (string-match-p "discarded" (commit-gate-t--client-output client)))
+    (should-not (file-exists-p
+                 (expand-file-name ".closed" (file-name-directory gate))))))
+
+(ert-deftest commit-gate-c-x-k-on-another-file-exits-0 ()
+  "A client can wait on any file, so only a gate's kill is a refusal."
+  (commit-gate-t--with-client dir client
+      (let ((f (expand-file-name "notes.txt" dir)))
+        (with-temp-file f (insert "notes\n"))
+        f)
+    (kill-buffer)
+    (should (equal (commit-gate-t--client-exit client) 0))))
+
+(ert-deftest commit-gate-c-c-c-k-discards-a-gate ()
+  "The key `with-editor' uses to cancel discards a gate too."
+  (commit-gate-t--with-client dir client
+      (commit-gate-t--run-dir dir commit-gate-t--nonce-a)
+    (should (eq (key-binding (kbd "C-c C-k")) #'commit-gate-discard))
+    (call-interactively (key-binding (kbd "C-c C-k")))
+    (should (equal (commit-gate-t--client-exit client) 1))
+    (should-not (get-file-buffer gate))))
+
+(ert-deftest commit-gate-a-refused-approval-then-c-x-k-refuses ()
+  "The refused gate's banner says to press C-x k, so that must reach the
+client too."
+  (commit-gate-t--with-client dir client
+      (commit-gate-t--run-dir dir commit-gate-t--nonce-a "bad\n")
+    (should-error (server-edit) :type 'user-error)
+    (should (process-live-p client))
+    (kill-buffer)
+    (should (equal (commit-gate-t--client-exit client) 1))))
+
+(ert-deftest commit-gate-c-x-hash-through-the-client-keeps-the-accepts ()
+  "The whole visit, accept and approve path keeps every accept, and the
+approval exits the client 0."
+  (commit-gate-t--with-client dir client
+      (commit-gate-t--claim-gate
+       dir (commit-gate-t--gate-text
+            "Subject\n"
+            (commit-gate-t--claim commit-gate-t--id-a commit-gate-t--claim-a)
+            (commit-gate-t--claim commit-gate-t--id-b commit-gate-t--claim-b)))
+    (should commit-gate-claims-mode)
+    (commit-gate-t--goto-claim commit-gate-t--claim-a)
+    (commit-gate-t--answering "yes" (commit-gate-accept-claim))
+    (commit-gate-t--goto-claim commit-gate-t--claim-b)
+    (commit-gate-t--answering "yes" (commit-gate-accept-claim))
+    (let ((inhibit-message t)) (server-edit))
+    (should (equal (commit-gate-t--client-exit client) 0))
+    (should (equal (commit-gate-t--closed gate)
+                   (concat commit-gate-t--nonce-a
+                           "\naccept " commit-gate-t--id-a
+                           "\naccept " commit-gate-t--id-b "\n")))))
+
 ;;; Arming it
 
 (ert-deftest commit-gate-arms-and-reports-itself ()
@@ -1453,6 +1673,7 @@ read on both hooks that can open a gate. The claim keys come on with them."
           (commit-gate-arm)
           (should (equal (sort (copy-sequence server-visit-hook) #'string<)
                          '(commit-gate-capture-nonce
+                           commit-gate-refuse-on-discard
                            commit-gate-show-banner
                            commit-gate-show-claims
                            commit-gate-warn-if-misnamed)))

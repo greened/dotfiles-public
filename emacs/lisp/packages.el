@@ -1257,11 +1257,10 @@ Emacs started."
 ;; Tell an accepted commit message from a dismissed one.
 ;;
 ;; A commit agent parks a blocking `emacsclient' on a CLAUDE_COMMIT_MSG buffer
-;; and waits.  `C-x #' approves the message; `C-x k' does not.  Afterwards
-;; nothing distinguishes them -- `server-kill-new-buffers' is t, so both leave
-;; no buffer and both let the client exit 0.  `C-x k' never reaches
-;; `server-done', so this advice is the only observable difference, and without
-;; it an agent must either refuse every approval or accept every dismissal.
+;; and waits. `C-x #' approves the message and `C-x k' does not. `C-x k' never
+;; reaches `server-done', so this advice is the only record of an approval,
+;; and without it an agent must either refuse every approval or accept every
+;; dismissal.
 ;;
 ;; `:after server' rather than `:demand t', so `server-done' is defined before
 ;; anything advises it.  The package is armed once here and is never removed:
