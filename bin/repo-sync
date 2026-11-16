@@ -20,6 +20,9 @@ URL is on the include list. A clone is matched by its normalized origin URL,
 `host/owner/repo`, and not by its path, so `git@example.com:owner/repo.git`
 and `https://example.com/owner/repo` are the same repo.
 
+A worktree with tracked changes moves only by a fast-forward to origin whose
+commits touch none of the changed files, and the changes stay in place.
+
 Configuration is `<overlay>/repo-sync/repos.list` in each overlay, read in
 `.order`. Each line is a keyword and its fields, whitespace-separated, with
 `#` comments and `~` expanded on the machine that uses the value:
@@ -62,6 +65,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 import zlib
 from concurrent.futures import ThreadPoolExecutor
 
@@ -82,6 +86,11 @@ JOB_DEADLINE = 300
 POLL_INTERVAL = 2
 FETCH_PARALLEL = 4
 SCAN_DEPTH = 3
+# Bounds on the path lists an inventory carries. describe() records a longer
+# list as unknown, so the move asks, and validate_inventory() rejects an
+# inventory that carries one.
+MAX_PATHS = 1000
+MAX_PATH_LEN = 4096
 MAX_RESULT_BYTES = 64 << 20
 SSH_OPTIONS = '-o BatchMode=yes -o ConnectTimeout=10'
 SSH_BASE = 'ssh ' + SSH_OPTIONS
@@ -498,9 +507,66 @@ def parse_status(text):
       untracked.append(path)
     elif xy != '!!':
       tracked.append('%s %s' % (xy.strip(), path))
-      if xy[0] in 'RC':
+      if 'R' in xy or 'C' in xy:
         i += 1
   return tracked, untracked
+
+
+def bounded(paths):
+  """The paths, or None when the list is too long to carry."""
+  if len(paths) > MAX_PATHS or any(len(p) > MAX_PATH_LEN for p in paths):
+    return None
+  return paths
+
+
+def status_paths(text):
+  """Every path with a tracked change, both sides of a rename or copy, raw.
+
+  Raw because they are compared, and a cleaned path could miss its match.
+  """
+  out = []
+  fields = text.split('\0')
+  i = 0
+  while i < len(fields):
+    f = fields[i]
+    i += 1
+    if len(f) < 4 or f[:2] in ('??', '!!'):
+      continue
+    out.append(f[3:])
+    if ('R' in f[:2] or 'C' in f[:2]) and i < len(fields):
+      out.append(fields[i])
+      i += 1
+  return out
+
+
+def touched(cwd, env, frm, to):
+  """The paths the commits from..to change, or None if git cannot say."""
+  # A rename lists only its new name unless rename detection is off.
+  r = git(['diff', '--no-renames', '--name-only', '-z', frm, to], cwd, env)
+  if not r.ok:
+    return None
+  return [p for p in r.out.split('\0') if p]
+
+
+def overlap(dirty, paths):
+  """The dirty paths that a fast-forward over `paths` would touch."""
+  # Folded because a mac filesystem may ignore case and Unicode normalization,
+  # and a false match only turns a move into a question.
+  fold = lambda p: unicodedata.normalize('NFC', p).casefold()
+  hit = {fold(p) for p in paths}
+  return sorted(p for p in dirty if fold(p) in hit)
+
+
+def tracked_clear(w, frm, to):
+  """Whether moving w's branch from frm to to touches none of its changes.
+
+  False unless the inventory carries both path lists for this exact move.
+  """
+  dirty, inc = w.get('dirty'), w.get('incoming')
+  return (bool(w['tracked']) and isinstance(dirty, list) and bool(dirty)
+          and isinstance(inc, dict) and inc.get('from') == frm
+          and inc.get('to') == to and isinstance(inc.get('paths'), list)
+          and not overlap(dirty, inc['paths']))
 
 
 def git_log(cwd, sha, window, env):
@@ -522,6 +588,31 @@ def fetch(repo, job):
   if r.timed_out:
     return 'fetch timed out after %ss' % job.get('fetch_timeout', FETCH_TIMEOUT)
   return 'fetch failed: ' + last_line(r)
+
+
+# What git leaves in a worktree's git dir while an operation is stopped there.
+# Moving the branch HEAD is on would pull it out from under the operation.
+IN_PROGRESS = (('MERGE_HEAD', 'mid-merge'),
+               ('CHERRY_PICK_HEAD', 'mid-cherry-pick'),
+               ('REVERT_HEAD', 'mid-revert'),
+               ('rebase-apply', 'mid-am'),
+               ('rebase-merge', 'mid-rebase'),
+               ('sequencer', 'mid-cherry-pick or revert'))
+
+
+def in_progress(path, env):
+  """What stopped operation holds the worktree at path, or None."""
+  args = ['rev-parse']
+  for name, _ in IN_PROGRESS:
+    args += ['--git-path', name]
+  r = git(args, path, env)
+  found = r.out.split('\n')[:len(IN_PROGRESS)] if r.ok else []
+  if len(found) != len(IN_PROGRESS):
+    return 'git state unknown'
+  for f, (_, what) in zip(found, IN_PROGRESS):
+    if os.path.lexists(os.path.join(path, f)):
+      return what
+  return None
 
 
 def rebase_head(path, env):
@@ -562,16 +653,25 @@ def describe(repo, job, roots, want):
         or excluded(p, job.get('exclude', [])) or not under(p, roots)):
       dropped[b] = 'checked out at %s, outside the scan' % tilde(e['path'], home)
       continue
+    op = in_progress(p, env)
+    if op:
+      dropped[b] = '%s at %s' % (op, tilde(e['path'], home))
+      continue
     email = git(['config', '--get', 'user.email'], p, env)
     st = git(['status', '--porcelain', '-z', '--untracked-files=normal'], p, env)
     if st.ok:
       tracked, untracked = parse_status(st.out)
+      dirty = bounded(status_paths(st.out))
     else:
       # Fail closed: a worktree whose state is unknown counts as dirty.
       tracked, untracked = ['? git status failed: ' + last_line(st)], []
-    worktrees.append({'path': p, 'branch': b,
-                      'email': clean(email.out.strip(), 200) or None,
-                      'tracked': tracked, 'untracked': untracked})
+      dirty = None
+    wt = {'path': p, 'branch': b,
+          'email': clean(email.out.strip(), 200) or None,
+          'tracked': tracked, 'untracked': untracked}
+    if tracked:
+      wt['dirty'] = dirty
+    worktrees.append(wt)
   refs = git(['for-each-ref',
               '--format=%(refname)%09%(objectname)%09%(upstream)',
               'refs/heads', 'refs/remotes/origin'], top, env)
@@ -595,6 +695,17 @@ def describe(repo, job, roots, want):
       if job.get('origin_logs', True) and o and o != tip:
         entry['olog'] = git_log(top, o, window, env)
     branches[b] = entry
+  # The driver decides, and it cannot diff in a mac clone. So a dirty
+  # worktree carries the paths its branch's move to origin would touch.
+  for w in worktrees:
+    b = w['branch']
+    if not w['tracked'] or b not in heads or (want is not None and b not in want):
+      continue
+    tip, o = heads[b][0], origin.get(b)
+    if o and o != tip:
+      paths = touched(top, env, tip, o)
+      w['incoming'] = {'from': tip, 'to': o,
+                       'paths': None if paths is None else bounded(paths)}
   repo.update({
       'worktrees': worktrees, 'dropped': dropped, 'branches': branches})
 
@@ -665,7 +776,12 @@ def worktree_for(clone, branch):
 
 
 def do_action(a, inv, job):
-  """One push or fast-forward, refused unless the tip is still `from`."""
+  """One push or fast-forward, refused unless the tip is still `from`.
+
+  A fast-forward with `keep_tracked` may move a worktree with tracked
+  changes, if none of them is in a path the move touches. They stay as they
+  are.
+  """
   res = {'aid': a['aid'], 'ok': False, 'moved': False, 'msg': ''}
   clones = inv['repos'].get(a['key'], [])
   if len(clones) != 1:
@@ -708,7 +824,7 @@ def do_action(a, inv, job):
     return res
   w = worktree_for(c, b)
   cwd = w['path'] if w is not None else c['top']
-  if w is not None and w['tracked']:
+  if w is not None and w['tracked'] and not a.get('keep_tracked'):
     res['msg'] = 'tracked changes: ' + ', '.join(w['tracked'][:5])
     return res
   r = git(['fetch', 'origin'], cwd, env, timeout=timeout)
@@ -723,8 +839,39 @@ def do_action(a, inv, job):
     if head.out.strip() != 'refs/heads/' + b:
       res['msg'] = 'the worktree no longer holds the branch'
       return res
-    r = git(['merge', '--ff-only', a['to']], cwd, env)
+    op = in_progress(cwd, env)
+    if op:
+      res['msg'] = '%s at %s' % (op, cwd)
+      return res
+    # Checked again here, because the inventory is older than this move.
+    st = git(['status', '--porcelain', '-z', '--untracked-files=no'], cwd, env)
+    if not st.ok:
+      res['msg'] = 'git status failed: ' + last_line(st)
+      return res
+    dirty = status_paths(st.out)
+    if dirty and not a.get('keep_tracked'):
+      res['msg'] = 'tracked changes: ' + ', '.join(parse_status(st.out)[0][:5])
+      return res
+    if dirty:
+      paths = touched(cwd, env, a['from'], a['to'])
+      if paths is None:
+        res['msg'] = ('tracked changes, and the paths the fast-forward '
+                      'touches are unknown')
+        return res
+      if bounded(paths) is None:
+        res['msg'] = ('tracked changes, and the fast-forward touches too many '
+                      'paths to check')
+        return res
+      hit = overlap(dirty, paths)
+      if hit:
+        res['msg'] = ('tracked changes the fast-forward touches: '
+                      + ', '.join(clean(p, 300) for p in hit[:5]))
+        return res
+    kept = bool(dirty)
+    # merge.autoStash would stash a change the move touches, not refuse it.
+    r = git(['merge', '--ff-only', '--no-autostash', a['to']], cwd, env)
   else:
+    kept = False
     # Not update-ref: git refuses to fetch into a branch checked out in any
     # worktree, and one may have been checked out since the inventory.
     r = git(['fetch', '.', '%s:refs/heads/%s' % (a['to'], b)], cwd, env)
@@ -733,7 +880,9 @@ def do_action(a, inv, job):
     return res
   tip = git(['rev-parse', '--verify', '-q', 'refs/heads/' + b], cwd, env)
   if tip.out.strip() == a['to']:
-    res.update(ok=True, moved=True, msg='fast-forwarded')
+    res.update(ok=True, moved=True,
+               msg=('fast-forwarded, tracked changes left in place' if kept
+                    else 'fast-forwarded'))
   else:
     res['msg'] = 'ended at an unexpected tip'
   return res
@@ -1068,6 +1217,9 @@ def validate_inventory(inv, mac_roots, known=frozenset(),
     return (isinstance(p, str) and os.path.isabs(p)
             and os.path.normpath(p) == p and under(p, roots))
 
+  def paths_ok(ps):
+    return ps is None or (_is_str_list(ps) and bounded(ps) is not None)
+
   def log_ok(log):
     return (isinstance(log, list) and len(log) <= WINDOW
             and all(isinstance(e, list) and len(e) == 3
@@ -1096,6 +1248,12 @@ def validate_inventory(inv, mac_roots, known=frozenset(),
         w['tracked'] = [clean(x, 300) for x in w['tracked']]
         w['untracked'] = [clean(x, 300) for x in w['untracked']]
         w['email'] = w['email'] and clean(w['email'], 200)
+        _need(paths_ok(w.get('dirty')), 'dirty paths')
+        inc = w.get('incoming')
+        _need(inc is None or (
+            isinstance(inc, dict) and paths_ok(inc.get('paths'))
+            and all(isinstance(inc.get(k), str) and SHA_RE.match(inc[k])
+                    for k in ('from', 'to'))), 'incoming')
       br = c.get('branches')
       _need(isinstance(br, dict) and len(br) <= 20000, 'branches')
       for name in list(br):
@@ -1211,16 +1369,21 @@ def email_rows(key, name, cv, cm):
   return []
 
 
-def blocker(c, b, home):
-  """('SKIPPED'|'ASK-DIRTY'|None, detail, untracked list) for moving b."""
+def blocker(c, b, home, ff=None):
+  """('SKIPPED'|'ASK-DIRTY'|None, detail, untracked list, kept list) for
+  moving b.
+
+  With ff, a (from, to) pair, tracked changes the move does not touch are
+  kept and listed, and do not block it.
+  """
   if b in c['dropped']:
-    return 'SKIPPED', c['dropped'][b], []
+    return 'SKIPPED', c['dropped'][b], [], []
   w = worktree_for(c, b)
   if w is None:
-    return None, None, []
-  if w['tracked']:
-    return 'ASK-DIRTY', w['tracked'], []
-  return None, w['path'], w['untracked']
+    return None, None, [], []
+  if w['tracked'] and (ff is None or not tracked_clear(w, *ff)):
+    return 'ASK-DIRTY', w['tracked'], [], []
+  return None, w['path'], w['untracked'], w['tracked']
 
 
 def decide_branch(key, name, b, cl, homes, cfg):
@@ -1269,7 +1432,10 @@ def decide_branch(key, name, b, cl, homes, cfg):
                        if ahead_of else 'no side holds unpushed commits'))]
 
   def move(kind, side, frm, to, **extra):
-    what, detail, untracked = blocker(cl[side], b, homes[side])
+    # Only a move to origin's tip may keep tracked changes. A move that
+    # follows a push still asks about them.
+    ff = (frm, to) if kind == 'AUTO' else None
+    what, detail, untracked, kept = blocker(cl[side], b, homes[side], ff)
     if what == 'SKIPPED':
       return [dict(base, kind='SKIPPED', machine=side, text=detail)]
     if what == 'ASK-DIRTY':
@@ -1277,8 +1443,11 @@ def decide_branch(key, name, b, cl, homes, cfg):
     row = dict(base, kind=kind, machine=side, **extra)
     row.update({'from': frm, 'to': to})
     out = [row]
+    if kept:
+      out.append(dict(base, kind='NOTE', machine=side, what='tracked',
+                      path=tilde(detail, homes[side]), files=kept))
     if untracked:
-      out.append(dict(base, kind='NOTE', machine=side,
+      out.append(dict(base, kind='NOTE', machine=side, what='untracked',
                       path=tilde(detail, homes[side]), files=untracked))
     return out
 
@@ -1447,7 +1616,9 @@ def render_row(r):
   elif k == 'IDENTITY':
     f = [r['text']]
   elif k == 'NOTE':
-    f = ['untracked: %s' % r['path']] + r['files'][:10]
+    label = ('tracked changes stay' if r.get('what') == 'tracked'
+             else 'untracked')
+    f = ['%s: %s' % (label, r['path'])] + r['files'][:10]
     if len(r['files']) > 10:
       f.append('and %d more' % (len(r['files']) - 10))
   elif k == 'AFTER':
@@ -1710,7 +1881,8 @@ class Driver:
             not on or self.descends(vm, r['key'], r['to'], cur['origin'])):
           steps[s].append({'aid': aid, 'op': 'ff', 'key': r['key'],
                            'branch': r['branch'], 'from': r['from'],
-                           'to': r['to'], 'row': r, 'moved_on': on})
+                           'to': r['to'], 'row': r, 'moved_on': on,
+                           'keep_tracked': True})
         else:
           refuse(r, 'changed since the report')
         continue

@@ -176,7 +176,10 @@ fetch never blocks that Emacs.
 It never resets, stashes, commits or force-pushes, and it never creates a
 branch. A branch syncs only if it exists on both machines. Anything that is
 not a plain fast-forward (unpushed commits, uncommitted changes, diverged
-branches, a different git identity) comes back as a question.
+branches, a different git identity) comes back as a question. The exception is
+a fast-forward to origin's tip that touches none of the changed files, which
+leaves the changes where they are. The move that follows a push still asks
+about any change to a tracked file.
 
 The configuration lives in the overlays, one `repo-sync/repos.list` per
 overlay, read in `.order`. It names the socket, the scan roots and how they

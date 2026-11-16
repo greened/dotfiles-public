@@ -117,9 +117,9 @@ class World:
     git('clone', '-q', self.origin, dest)
     return dest
 
-  def commit(self, clone, msg):
+  def commit(self, clone, msg, name=None):
     self.n += 1
-    with open(os.path.join(clone, 'f%d.txt' % self.n), 'w') as f:
+    with open(os.path.join(clone, name or 'f%d.txt' % self.n), 'w') as f:
       f.write(msg + '\n')
     git('add', '-A', cwd=clone)
     git('commit', '-q', '-m', msg, cwd=clone)
@@ -291,8 +291,8 @@ class Decide(unittest.TestCase):
     self.assertNotIn('maconly', heads(self.w.vm))
     self.assertNotIn('maconly', heads(self.w.origin))
 
-  def test_08_tracked_dirt_asks_and_leaves_the_ref(self):
-    self.w.commit(self.w.vm, 'vm work')
+  def test_08_tracked_dirt_the_commits_touch_asks_and_leaves_the_ref(self):
+    self.w.commit(self.w.vm, 'vm work', 'f1.txt')
     git('push', '-q', 'origin', 'main', cwd=self.w.vm)
     before = self.w.tip(self.w.mac)
     with open(os.path.join(self.w.mac, 'f1.txt'), 'a') as f:
@@ -305,6 +305,43 @@ class Decide(unittest.TestCase):
     self.assertFalse(kinds(rows, 'AUTO'))
     self.w.apply()
     self.assertEqual(self.w.tip(self.w.mac), before)
+
+  def test_08b_tracked_dirt_the_commits_skip_fast_forwards_with_a_note(self):
+    self.w.commit(self.w.vm, 'vm work')
+    git('push', '-q', 'origin', 'main', cwd=self.w.vm)
+    with open(os.path.join(self.w.mac, 'f1.txt'), 'a') as f:
+      f.write('edit\n')
+    code, rows = self.w.report()
+    self.assertEqual(code, 0)
+    self.assertFalse(kinds(rows, 'ASK-DIRTY'))
+    self.assertEqual([r['machine'] for r in kinds(rows, 'AUTO', 'main')],
+                     ['mac'])
+    note = kinds(rows, 'NOTE', 'main')
+    self.assertEqual([(r['what'], r['files']) for r in note],
+                     [('tracked', ['M f1.txt'])])
+    self.assertIn('tracked changes stay', rs.render(rows, 'h', False))
+
+  def test_08c_a_rename_whose_source_the_commits_touch_asks(self):
+    self.w.commit(self.w.vm, 'vm work', 'f1.txt')
+    git('push', '-q', 'origin', 'main', cwd=self.w.vm)
+    git('mv', 'f1.txt', 'moved.txt', cwd=self.w.mac)
+    code, rows = self.w.report()
+    self.assertEqual(code, 1)
+    dirty = kinds(rows, 'ASK-DIRTY', 'main')
+    self.assertEqual([(r['machine'], r['files']) for r in dirty],
+                     [('mac', ['R moved.txt'])])
+    self.assertFalse(kinds(rows, 'AUTO'))
+
+  def test_08d_a_dirty_file_the_commits_rename_asks(self):
+    git('mv', 'f1.txt', 'moved.txt', cwd=self.w.vm)
+    git('commit', '-q', '-m', 'rename', cwd=self.w.vm)
+    git('push', '-q', 'origin', 'main', cwd=self.w.vm)
+    with open(os.path.join(self.w.mac, 'f1.txt'), 'a') as f:
+      f.write('edit\n')
+    code, rows = self.w.report()
+    self.assertEqual(code, 1)
+    self.assertEqual([r['machine'] for r in kinds(rows, 'ASK-DIRTY', 'main')],
+                     ['mac'])
 
   def test_09_untracked_only_still_fast_forwards_with_a_note(self):
     new = self.w.commit(self.w.vm, 'vm work')
@@ -834,7 +871,7 @@ class Apply(unittest.TestCase):
     self.assertEqual(self.w.origin_tip(), before)
 
   def test_dirt_that_appears_after_the_report_refuses(self):
-    self.w.commit(self.w.vm, 'vm work')
+    self.w.commit(self.w.vm, 'vm work', 'f1.txt')
     git('push', '-q', 'origin', 'main', cwd=self.w.vm)
     before = self.w.tip(self.w.mac)
     _, rows = self.w.report()
@@ -843,10 +880,62 @@ class Apply(unittest.TestCase):
       f.write('edit\n')
     code, out = self.w.apply()
     self.assertEqual(code, 1)
-    self.assertIn('tracked changes', kinds(out, 'REFUSED')[0]['text'])
+    self.assertEqual(kinds(out, 'REFUSED')[0]['text'],
+                     'tracked changes the fast-forward touches: f1.txt')
+    self.assertEqual(self.w.tip(self.w.mac), before)
+    with open(os.path.join(self.w.mac, 'f1.txt')) as f:
+      self.assertEqual(f.read(), 'initial\nedit\n')
+
+  def test_dirt_the_report_allowed_refuses_once_it_reaches_a_touched_file(self):
+    self.w.commit(self.w.seed, 'second')
+    git('push', '-q', 'origin', 'main', cwd=self.w.seed)
+    git('pull', '-q', '--ff-only', cwd=self.w.mac)
+    git('pull', '-q', '--ff-only', cwd=self.w.vm)
+    self.w.commit(self.w.vm, 'vm work', 'f2.txt')
+    git('push', '-q', 'origin', 'main', cwd=self.w.vm)
+    before = self.w.tip(self.w.mac)
+    with open(os.path.join(self.w.mac, 'f1.txt'), 'a') as f:
+      f.write('edit\n')
+    _, rows = self.w.report()
+    self.assertEqual(len(kinds(rows, 'AUTO', 'main')), 1)
+    with open(os.path.join(self.w.mac, 'f2.txt'), 'a') as f:
+      f.write('late\n')
+    code, out = self.w.apply()
+    self.assertEqual(code, 1)
+    self.assertEqual(kinds(out, 'REFUSED')[0]['text'],
+                     'tracked changes the fast-forward touches: f2.txt')
     self.assertEqual(self.w.tip(self.w.mac), before)
 
+  def test_tracked_dirt_the_commits_skip_stays_through_the_apply(self):
+    self.w.commit(self.w.seed, 'second')
+    git('push', '-q', 'origin', 'main', cwd=self.w.seed)
+    git('pull', '-q', '--ff-only', cwd=self.w.mac)
+    git('pull', '-q', '--ff-only', cwd=self.w.vm)
+    new = self.w.commit(self.w.vm, 'vm work')
+    git('push', '-q', 'origin', 'main', cwd=self.w.vm)
+    with open(os.path.join(self.w.mac, 'f1.txt'), 'a') as f:
+      f.write('unstaged\n')
+    with open(os.path.join(self.w.mac, 'f2.txt'), 'a') as f:
+      f.write('staged\n')
+    git('add', 'f2.txt', cwd=self.w.mac)
+    status = git('status', '--porcelain', cwd=self.w.mac)
+    _, rows = self.w.report()
+    self.assertEqual([r['files'] for r in kinds(rows, 'NOTE', 'main')],
+                     [['M f1.txt', 'M f2.txt']])
+    code, out = self.w.apply()
+    self.assertEqual(code, 0, out)
+    self.assertEqual(kinds(out, 'DONE')[0]['text'],
+                     'fast-forwarded, tracked changes left in place')
+    self.assertEqual(self.w.tip(self.w.mac), new)
+    self.assertEqual(git('status', '--porcelain', cwd=self.w.mac), status)
+    with open(os.path.join(self.w.mac, 'f1.txt')) as f:
+      self.assertEqual(f.read(), 'initial\nunstaged\n')
+    self.assertEqual(git('diff', '--cached', '--name-only', cwd=self.w.mac),
+                     'f2.txt')
+
   def test_follow_side_dirt_shows_both_rows(self):
+    # The follow move touches no dirty path, and still asks, since only an
+    # AUTO move may keep tracked changes.
     self.w.commit(self.w.vm, 'unpushed')
     with open(os.path.join(self.w.mac, 'f1.txt'), 'a') as f:
       f.write('edit\n')
@@ -903,6 +992,165 @@ class Apply(unittest.TestCase):
     self.assertIn('mid-rebase', skipped[0]['text'])
     self.w.apply()
     self.assertEqual(self.w.tip(self.w.mac, 'refs/heads/main'), before)
+
+  def dirty_ff(self):
+    """Origin one commit past the mac, which has a change the commit skips."""
+    self.w.commit(self.w.seed, 'second')
+    git('push', '-q', 'origin', 'main', cwd=self.w.seed)
+    git('pull', '-q', '--ff-only', cwd=self.w.mac)
+    git('pull', '-q', '--ff-only', cwd=self.w.vm)
+    self.w.commit(self.w.vm, 'vm work', 'f2.txt')
+    git('push', '-q', 'origin', 'main', cwd=self.w.vm)
+    with open(os.path.join(self.w.mac, 'f1.txt'), 'a') as f:
+      f.write('edit\n')
+    git('fetch', '-q', 'origin', cwd=self.w.mac)
+    job = self.mac_job()
+    inv = rs.take_inventory(job, do_fetch=False)
+    a = {'aid': '0', 'op': 'ff', 'key': rs.normalize_url(self.w.origin),
+         'branch': 'main', 'from': self.w.tip(self.w.mac),
+         'to': self.w.origin_tip(), 'keep_tracked': True}
+    return a, inv, job
+
+  def hooked_git(self, op, action):
+    """rs.git, with `action` run just before each `git op`, or its result
+    used in place of the call when it returns one."""
+    real = rs.git
+
+    def fake(args, cwd, env=None, **kw):
+      if args[0] == op:
+        r = action()
+        if r is not None:
+          return r
+      return real(args, cwd, env, **kw)
+    return mock.patch.object(rs, 'git', fake)
+
+  def test_autostash_config_cannot_stash_a_change_the_move_touches(self):
+    a, inv, job = self.dirty_ff()
+    git('config', 'merge.autoStash', 'true', cwd=self.w.mac)
+
+    def late_edit():
+      with open(os.path.join(self.w.mac, 'f2.txt'), 'a') as f:
+        f.write('late\n')
+    with self.hooked_git('merge', late_edit):
+      res = rs.do_action(a, inv, job)
+    self.assertFalse(res['ok'], res)
+    self.assertIn('fast-forward refused', res['msg'])
+    self.assertEqual(self.w.tip(self.w.mac), a['from'])
+    self.assertEqual(git('stash', 'list', cwd=self.w.mac), '')
+    with open(os.path.join(self.w.mac, 'f2.txt')) as f:
+      self.assertEqual(f.read(), 'second\nlate\n')
+
+  def test_a_status_failure_at_apply_refuses_a_move_the_report_allowed(self):
+    a, inv, job = self.dirty_ff()
+    self.assertIsNone(rs.blocker(inv['repos'][a['key']][0], 'main', '/',
+                                 (a['from'], a['to']))[0])
+    with self.hooked_git('status', lambda: rs.Result(128, '', 'fatal: boom')):
+      res = rs.do_action(a, inv, job)
+    self.assertEqual(res['msg'], 'git status failed: fatal: boom')
+    self.assertEqual(self.w.tip(self.w.mac), a['from'])
+
+  def test_unknown_touched_paths_refuse(self):
+    a, inv, job = self.dirty_ff()
+    with mock.patch.object(rs, 'touched', return_value=None):
+      res = rs.do_action(a, inv, job)
+    self.assertEqual(res['msg'], 'tracked changes, and the paths the '
+                     'fast-forward touches are unknown')
+    self.assertEqual(self.w.tip(self.w.mac), a['from'])
+
+  def test_too_many_touched_paths_refuse(self):
+    a, inv, job = self.dirty_ff()
+    with mock.patch.object(rs, 'MAX_PATHS', 0):
+      res = rs.do_action(a, inv, job)
+    self.assertEqual(res['msg'], 'tracked changes, and the fast-forward '
+                     'touches too many paths to check')
+    self.assertEqual(self.w.tip(self.w.mac), a['from'])
+
+  def conflicting_picks(self):
+    """Two commits fetched into the mac, the first of which conflicts there."""
+    git('checkout', '-q', '-b', 'pick', cwd=self.w.seed)
+    with open(os.path.join(self.w.seed, 'f1.txt'), 'w') as f:
+      f.write('base\n')
+    git('commit', '-q', '-am', 'base', cwd=self.w.seed)
+    with open(os.path.join(self.w.seed, 'f1.txt'), 'w') as f:
+      f.write('picked\n')
+    git('commit', '-q', '-am', 'p1', cwd=self.w.seed)
+    self.w.commit(self.w.seed, 'p2', 'p2.txt')
+    git('fetch', '-q', self.w.seed, 'pick:refs/picks/pick', cwd=self.w.mac)
+    return 'refs/picks/pick~1', 'refs/picks/pick'
+
+  def vm_moves_main(self):
+    self.w.commit(self.w.vm, 'vm work', 'vm.txt')
+    git('push', '-q', 'origin', 'main', cwd=self.w.vm)
+
+  def test_a_stopped_am_is_skipped_and_left_alone(self):
+    p1, _ = self.conflicting_picks()
+    patch = os.path.join(self.w.tmp, 'p1.patch')
+    with open(patch, 'w') as f:
+      f.write(git('format-patch', '-1', '--stdout', p1, cwd=self.w.mac) + '\n')
+    self.vm_moves_main()
+    before = self.w.tip(self.w.mac)
+    subprocess.run(['git', 'am', patch], cwd=self.w.mac, capture_output=True)
+    am = os.path.join(self.w.mac, '.git', 'rebase-apply')
+    self.assertTrue(os.path.isdir(am))
+    with open(os.path.join(self.w.mac, 'f1.txt'), 'a') as f:
+      f.write('edit\n')
+    _, rows = self.w.report()
+    skipped = kinds(rows, 'SKIPPED', 'main')
+    self.assertEqual([r['machine'] for r in skipped], ['mac'])
+    self.assertTrue(skipped[0]['text'].startswith('mid-am at '), skipped)
+    self.assertFalse(kinds(rows, 'AUTO', 'main'))
+    self.w.apply()
+    self.assertEqual(self.w.tip(self.w.mac), before)
+    self.assertTrue(os.path.isdir(am))
+
+  def test_a_stopped_cherry_pick_sequence_is_skipped(self):
+    p1, p2 = self.conflicting_picks()
+    self.vm_moves_main()
+    before = self.w.tip(self.w.mac)
+    subprocess.run(['git', 'cherry-pick', p1, p2], cwd=self.w.mac,
+                   capture_output=True)
+    self.assertTrue(os.path.isdir(os.path.join(self.w.mac, '.git',
+                                               'sequencer')))
+    _, rows = self.w.report()
+    skipped = kinds(rows, 'SKIPPED', 'main')
+    self.assertEqual([r['machine'] for r in skipped], ['mac'])
+    self.assertTrue(skipped[0]['text'].startswith('mid-cherry-pick at '),
+                    skipped)
+    self.w.apply()
+    self.assertEqual(self.w.tip(self.w.mac), before)
+
+  def test_an_operation_started_after_the_inventory_refuses_the_move(self):
+    p1, p2 = self.conflicting_picks()
+    a, inv, job = self.dirty_ff()
+    git('checkout', '-q', '--', 'f1.txt', cwd=self.w.mac)
+    subprocess.run(['git', 'cherry-pick', p1, p2], cwd=self.w.mac,
+                   capture_output=True)
+    res = rs.do_action(a, inv, job)
+    self.assertEqual(res['msg'], 'mid-cherry-pick at ' + self.w.mac)
+    self.assertEqual(self.w.tip(self.w.mac), a['from'])
+
+  def test_each_operation_marker_blocks_alone(self):
+    wt = os.path.join(self.w.macroot, 'work', 'wt')
+    git('worktree', 'add', '-q', '-b', 'wt', wt, cwd=self.w.mac)
+    for path in (self.w.mac, wt):
+      for name, what in (('MERGE_HEAD', 'mid-merge'),
+                         ('CHERRY_PICK_HEAD', 'mid-cherry-pick'),
+                         ('REVERT_HEAD', 'mid-revert'),
+                         ('rebase-apply', 'mid-am'),
+                         ('rebase-merge', 'mid-rebase'),
+                         ('sequencer', 'mid-cherry-pick or revert')):
+        with self.subTest(path=path, marker=name):
+          marker = os.path.join(path, git('rev-parse', '--git-path', name,
+                                          cwd=path))
+          self.assertIsNone(rs.in_progress(path, None))
+          os.mkdir(marker)
+          try:
+            self.assertEqual(rs.in_progress(path, None), what)
+          finally:
+            os.rmdir(marker)
+
+  def test_an_unreadable_git_state_counts_as_an_operation(self):
+    self.assertEqual(rs.in_progress(self.w.tmp, None), 'git state unknown')
 
   def test_a_branch_checked_out_outside_the_scan_is_skipped(self):
     base, _, _ = self.side_branch()
@@ -1472,6 +1720,61 @@ class LaunchScript(unittest.TestCase):
     shutil.rmtree(d, True)
 
 
+class TrackedClear(unittest.TestCase):
+  """Which inventories let a move to origin keep tracked changes."""
+
+  def clone(self, **w):
+    wt = {'path': '/p/r', 'branch': 'main', 'tracked': ['M a'],
+          'untracked': [], 'dirty': ['a'],
+          'incoming': {'from': 'a' * 40, 'to': 'b' * 40, 'paths': ['b']}}
+    wt.update(w)
+    return {'dropped': {}, 'worktrees': [wt]}
+
+  def what(self, c, ff=('a' * 40, 'b' * 40)):
+    return rs.blocker(c, 'main', '/', ff)[0]
+
+  def test_disjoint_paths_do_not_block(self):
+    self.assertIsNone(self.what(self.clone()))
+
+  def test_no_move_pair_still_asks(self):
+    self.assertEqual(self.what(self.clone(), None), 'ASK-DIRTY')
+
+  def test_unknown_or_mismatched_lists_ask(self):
+    inc = {'from': 'a' * 40, 'to': 'b' * 40, 'paths': None}
+    for name, c in (('no dirty list', self.clone(dirty=None)),
+                    ('no incoming', self.clone(incoming=None)),
+                    ('no incoming paths', self.clone(incoming=inc)),
+                    ('empty dirty list', self.clone(dirty=[]))):
+      with self.subTest(name):
+        self.assertEqual(self.what(c), 'ASK-DIRTY')
+    with self.subTest('another move'):
+      self.assertEqual(self.what(self.clone(), ('a' * 40, 'c' * 40)),
+                       'ASK-DIRTY')
+
+  def test_a_failed_status_asks(self):
+    c = self.clone(tracked=['? git status failed: x'], dirty=None)
+    self.assertEqual(self.what(c), 'ASK-DIRTY')
+
+  def test_case_and_normalization_count_as_a_match(self):
+    self.assertEqual(rs.overlap(['Settings.json'], ['settings.json']),
+                     ['Settings.json'])
+    self.assertTrue(rs.overlap(['caf\u00e9'], ['cafe\u0301']))
+
+  def test_a_long_path_list_is_dropped(self):
+    self.assertIsNone(rs.bounded(['p'] * (rs.MAX_PATHS + 1)))
+
+  def test_status_paths_keep_both_sides_of_a_rename(self):
+    self.assertEqual(rs.status_paths('R  new\0old\0 M x\0?? u\0'),
+                     ['new', 'old', 'x'])
+
+  def test_parse_status_skips_the_source_of_a_rename_in_either_column(self):
+    for text in ('R  new\0old-name\0 M x\0', ' R new\0old-name\0 M x\0',
+                 ' C new\0old-name\0 M x\0'):
+      with self.subTest(text=text):
+        tracked, _ = rs.parse_status(text)
+        self.assertEqual(tracked[1:], ['M x'])
+
+
 class Validate(unittest.TestCase):
 
   def inv(self):
@@ -1511,6 +1814,19 @@ class Validate(unittest.TestCase):
     inv = self.inv()
     inv['repos']['example.com/o/r'][0]['branches']['main']['tip'] = 'HEAD'
     with self.assertRaises(rs.Error):
+      self.validate(inv)
+
+  def test_bad_incoming_paths_are_rejected(self):
+    inv = self.inv()
+    w = inv['repos']['example.com/o/r'][0]['worktrees'][0]
+    w['incoming'] = {'from': 'a' * 40, 'to': 'b' * 40, 'paths': [1]}
+    with self.assertRaisesRegex(rs.Error, 'incoming'):
+      self.validate(inv)
+
+  def test_a_dirty_list_that_is_not_a_list_is_rejected(self):
+    inv = self.inv()
+    inv['repos']['example.com/o/r'][0]['worktrees'][0]['dirty'] = 'a'
+    with self.assertRaisesRegex(rs.Error, 'dirty paths'):
       self.validate(inv)
 
   def test_bad_branch_name_is_dropped(self):
