@@ -2985,12 +2985,30 @@ A nested call retries from a fresh idle timer instead."
 ;; NOTE: *-ts-mode modes do NOT run cc-mode's `c-mode-common-hook', so the
 ;; cc-mode tweaks in `my/c-mode-hook' won't apply under c++-ts-mode -- port
 ;; those to `c-ts-mode-hook' / `c++-ts-mode-hook' if you want them there.
-;; To limit tree-sitter to just C/C++, set `treesit-auto-langs' to '(c cpp).
+;; `treesit-auto-langs' holds only the installed grammars, because every file
+;; visit probes each listed language and a missing one is slow to probe. A
+;; grammar installed later takes effect at the next start.
+(defun my/treesit-installed-langs ()
+  "Return the languages whose grammar library is in a tree-sitter directory.
+This reads the directories rather than calling `treesit-language-available-p',
+which is slow for a grammar that is not installed."
+  (let (langs)
+    (dolist (dir (cons (expand-file-name "tree-sitter" user-emacs-directory)
+                       treesit-extra-load-path))
+      (dolist (file (ignore-errors
+                      (directory-files
+                       dir nil "\\`libtree-sitter-.+\\.\\(?:so\\|dylib\\|dll\\)\\'")))
+        (push (intern (file-name-base
+                       (string-remove-prefix "libtree-sitter-" file)))
+              langs)))
+    (delete-dups langs)))
+
 (use-package treesit-auto
   :ensure t
   :custom
   (treesit-auto-install 'prompt)
   :config
+  (setq treesit-auto-langs (my/treesit-installed-langs))
   (global-treesit-auto-mode))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
