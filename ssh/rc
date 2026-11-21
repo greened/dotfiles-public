@@ -23,7 +23,9 @@
 # sshd(8) describes under SSHRC.
 
 link="$HOME/.ssh/agent-$(hostname -s).sock"
-if [ -S "$SSH_AUTH_SOCK" ] && [ -O "$SSH_AUTH_SOCK" ]; then
+# A forwarded agent's socket is never a symlink. Refusing one keeps the link
+# from ever naming itself.
+if [ -S "$SSH_AUTH_SOCK" ] && [ -O "$SSH_AUTH_SOCK" ] && [ ! -L "$SSH_AUTH_SOCK" ]; then
   # ssh-add exits 0 or 1 when an agent answers. The watchdog bounds a wedged
   # one, such as a slept laptop's, since sshd waits for this file before the
   # session starts. Its output goes nowhere, so a leftover sleep cannot hold

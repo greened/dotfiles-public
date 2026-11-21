@@ -59,6 +59,10 @@ start=$SECONDS
 SSH_AUTH_SOCK="$tmp/a3" DISPLAY= runrc < /dev/null
 check 'a wedged agent cannot hold the session' test $((SECONDS - start)) -le 5
 check 'a wedged agent lets the link move' test "$(readlink "$link")" = "$tmp/a3"
+ln -sfn "$tmp/wedged" "$link"
+SSH_AUTH_SOCK="$link" DISPLAY= runrc < /dev/null
+check 'the link never names itself' test "$(readlink "$link")" = "$tmp/wedged"
+ln -sfn "$tmp/a3" "$link"
 
 echo 'MIT-MAGIC-COOKIE-1 abc123' | SSH_AUTH_SOCK= DISPLAY=localhost:10.0 runrc
 check 'a localhost display goes to xauth as unix:' \
